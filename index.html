@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#38a8e0">
+<meta name="robots" content="noindex, nofollow">
+<meta name="description" content="Admin and classes dashboard for The Little Wings Play School, Vuyyuru">
+<title>The Little Wings · Dashboard</title>
+<link rel="icon" href="assets/logo.jpeg" type="image/jpeg">
+<link rel="apple-touch-icon" href="assets/logo.jpeg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<noscript><div class="noscript">This dashboard needs JavaScript turned on in your browser.</div></noscript>
+
+<!-- First-run setup / login -->
+<div id="auth-screen" hidden></div>
+
+<!-- Main app shell -->
+<div id="shell" hidden>
+  <header class="topbar">
+    <a class="brand" href="#/dashboard" aria-label="Dashboard home">
+      <img src="assets/logo.jpeg" alt="" width="40" height="40">
+      <span class="brand-text"><b id="brand-name">The Little Wings</b><small id="page-title">Dashboard</small></span>
+    </a>
+    <div class="top-actions">
+      <span id="user-chip" class="user-chip"></span>
+      <button class="btn ghost small" data-act="logout" title="Lock / log out">🔒 <span class="hide-xs">Lock</span></button>
+    </div>
+  </header>
+  <nav id="sidenav" class="sidenav" aria-label="Main"></nav>
+  <main id="view" class="view" tabindex="-1"></main>
+  <nav id="bottomnav" class="bottomnav" aria-label="Main"></nav>
+</div>
+
+<div id="modal-root"></div>
+<div id="confirm-root"></div>
+<div id="toast-root" aria-live="polite"></div>
+<div id="print-root" aria-hidden="true"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
