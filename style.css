@@ -395,3 +395,31 @@ details summary { cursor: pointer; font-weight: 700; }
   background: var(--ink); color: #fff; padding: .7rem 1.15rem; border-radius: 999px; font: inherit; font-weight: 700; font-size: .9rem;
   box-shadow: 0 6px 20px rgba(0,0,0,.2); cursor: pointer; border: 0; max-width: 92vw; }
 #sw-update:hover { filter: brightness(1.08); }
+
+/* ---------- v2.2: parent logins + notices ---------- */
+.row.between { justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
+.row.between h2 { margin: 0; }
+.danger-t { color: var(--coral-d); }
+.ro { display: block; padding: .6rem .8rem; background: #f7f9fc; border-radius: var(--r-s); font-weight: 700; }
+.check { display: flex; align-items: center; gap: .5rem; font-weight: 700; margin: 0 0 1rem; cursor: pointer; }
+.check input, .kid-opt input { width: 20px; height: 20px; min-height: 0; padding: 0; flex: 0 0 auto; accent-color: var(--sky); }
+.tel-wrap { display: flex; align-items: stretch; min-width: 0; }
+.tel-wrap .cc { display: flex; align-items: center; padding: 0 .6rem; background: #eef3f8; border: 2px solid var(--line); border-right: 0; border-radius: var(--r-s) 0 0 var(--r-s); font-weight: 700; color: var(--muted); }
+.tel-wrap input { flex: 1; min-width: 0; border-radius: 0 var(--r-s) var(--r-s) 0 !important; }
+.kid-filter { width: 100%; margin-bottom: .4rem; }
+.kid-picker { max-height: 240px; overflow-y: auto; border: 2px solid var(--line); border-radius: var(--r-s); padding: .25rem; background: #fff; }
+.kid-opt { display: flex; align-items: center; gap: .6rem; padding: .5rem; border-radius: 10px; cursor: pointer; min-width: 0; }
+.kid-opt[hidden] { display: none; }
+.kid-opt:hover { background: var(--sky-l); }
+
+.kid-opt span { min-width: 0; } .kid-opt small { display: block; color: var(--muted); }
+.notice-list { display: flex; flex-direction: column; gap: .7rem; }
+.notice { border: 2px solid var(--line); border-radius: var(--r-s); padding: .75rem .9rem; background: #fff; min-width: 0; overflow-wrap: anywhere; }
+.notice.pinned { border-color: var(--yellow); background: var(--yellow-l); }
+.notice.expired { opacity: .6; }
+.notice h3 { margin: .35rem 0 .2rem; font-size: 1.02rem; }
+.notice-body { white-space: pre-wrap; margin: .2rem 0 .4rem; }
+.notice-top { display: flex; gap: .35rem; flex-wrap: wrap; }
+.tag.n-all { background: var(--sky-l); color: var(--sky-d); }
+.tag.n-class { background: #fff; border: 1.5px solid var(--c); color: var(--ink); }
+.tag.n-pin { background: var(--yellow); color: #5c4100; }

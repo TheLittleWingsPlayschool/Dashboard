@@ -7,7 +7,9 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.1.0';
+  var APP_VERSION = '2.2.0';
+  var PARENT_DOMAIN = 'parents.littlewings.app';
+  var PARENTS_APP_URL = 'https://thelittlewingsplayschool.github.io/Dashboard/parents/';
   var TZ = 'Asia/Kolkata';
 
   var CLASSES = [
@@ -123,6 +125,7 @@
       }
       if (name === 'attendance') { var a = {}; live('attendance').forEach(function (r) { a[r.day] = Object.assign(a[r.day] || {}, clone(r.data)); }); return a; }
       if (name === 'users') return st.profiles.filter(function (p) { return p.role === 'teacher'; }).map(function (p) { return { id: p.id, name: p.name || p.email || 'Teacher', classId: p.class_id || '', email: p.email || '' }; });
+      if (name === 'parents') return st.profiles.filter(function (p) { return p.role === 'parent'; }).map(function (p) { var e = p.email || ''; return { id: p.id, name: p.name || 'Parent', phone: e.split('@')[1] === PARENT_DOMAIN ? e.split('@')[0] : '', email: e }; });
       if (name === 'payments' || name === 'enquiries' || name === 'staff') return live(name).map(function (r) { var o = clone(r.data); o.id = r.id; return o; });
       return undefined;
     }
@@ -397,6 +400,7 @@
     S.settings = Object.assign({}, DEFAULT_SETTINGS, asObject(Store.load('settings', {})));
     S.settings.classTeachers = asObject(S.settings.classTeachers);
     S.users = asArray(Store.load('users', []));
+    S.parents = asArray(Store.load('parents', []));
     S.students = asArray(Store.load('students', []));
     S.attendance = asObject(Store.load('attendance', {}));
     S.payments = asArray(Store.load('payments', []));
@@ -672,6 +676,7 @@
    * SESSION & AUTH SCREENS (Supabase Auth: email + password)
    * ===================================================================== */
   var ME = null;
+  var FORMS_EXTRA = {};
   function isAdmin() { return ME && ME.role === 'admin'; }
   function fnCall(action, payload) {
     // Calls the lw-admin Edge Function (service key stays on the server).
@@ -777,6 +782,7 @@
       (opts.message ? '<p class="note">' + esc(opts.message) + '</p>' : '') +
       '<button class="btn primary big block">Sign in 🔓</button>' +
       '<p class="center small"><button type="button" class="link" data-act="auth-forgot">Forgot password?</button></p>' +
+      '<p class="center small muted">Parent? Open the <a href="parents/">Little Wings Parents app</a>.</p>' +
       '<p id="setup-hint" class="note center" hidden>No admin account exists yet. <button type="button" class="link strong" data-act="auth-setup">Create the admin account</button></p>' +
       '</form>' + installHintHTML(true)));
     var f = $('#login-form');
@@ -854,6 +860,7 @@
     if (uid) Store.clearCache(uid); // don't leave school data on a shared phone
     Store.reset();
     UI.drafts = {};
+    PX.reset();
     location.hash = '';
     var p = SB ? SB.auth.signOut({ scope: 'local' }) : Promise.resolve();
     p.catch(function () {}).then(function () { boot(); });
@@ -865,9 +872,16 @@
       ? { role: 'admin', userId: p.id, name: S.settings.owner || p.name || 'Admin', email: p.email }
       : { role: 'teacher', userId: p.id, name: p.name || p.email || 'Teacher', classId: p.class_id || '', email: p.email };
   }
+  function parentInDashboard() {
+    var uid = Store.profile() && Store.profile().id;
+    Store.stop(); if (uid) Store.clearCache(uid); Store.reset(); ME = null;
+    var p = SB ? SB.auth.signOut({ scope: 'local' }) : Promise.resolve();
+    p.catch(function () {}).then(function () { showLogin({ skipStatus: true, message: 'This is a parent login. Parents use the Little Wings Parents app: ' + PARENTS_APP_URL }); });
+  }
   function startSession(user) {
     Store.init(user.id);
     var cached = Store.profile();
+    if (cached && cached.role === 'parent') { cached = null; }
     if (cached) { applyProfile(cached); showShell(); }
     else showLoading('Loading your dashboard…');
     SB.from('profiles').select('id,role,name,email,class_id').eq('id', user.id).maybeSingle().then(function (res) {
@@ -877,6 +891,7 @@
         return;
       }
       if (!res.data) return noAccess();
+      if (res.data.role === 'parent') return parentInDashboard();
       var wasShown = !!ME;
       Store.setProfile(res.data);
       applyProfile(res.data);
@@ -898,12 +913,13 @@
     dashboard: { title: 'Dashboard', tTitle: 'My Class', icon: '🏠', roles: ['admin', 'teacher'], render: viewDashboard },
     classes: { title: 'Classes', tTitle: 'Students', icon: '🧒', roles: ['admin', 'teacher'], render: viewClasses },
     attendance: { title: 'Attendance', icon: '✅', roles: ['admin', 'teacher'], render: viewAttendance },
+    notices: { title: 'Notices', icon: '📢', roles: ['admin', 'teacher'], render: viewNotices },
     fees: { title: 'Fees', icon: '💰', roles: ['admin'], render: viewFees },
     enquiries: { title: 'Enquiries', icon: '📝', roles: ['admin'], render: viewEnquiries },
     staff: { title: 'Staff', icon: '👩‍🏫', roles: ['admin'], render: viewStaff },
     settings: { title: 'Settings', tTitle: 'Account', icon: '⚙️', roles: ['admin', 'teacher'], render: viewSettings }
   };
-  var ROUTE_ORDER = ['dashboard', 'classes', 'attendance', 'fees', 'enquiries', 'staff', 'settings'];
+  var ROUTE_ORDER = ['dashboard', 'classes', 'attendance', 'notices', 'fees', 'enquiries', 'staff', 'settings'];
   function routeTitle(key) { var r = ROUTES[key]; return (ME && ME.role === 'teacher' && r.tTitle) ? r.tTitle : r.title; }
   function parseHash() {
     var h = (location.hash || '').replace(/^#\/?/, '').split('/');
@@ -1257,8 +1273,10 @@
       body += '<h4>Fees</h4><p>Pending (all months): <b class="coral-t">' + inr(outstanding(s)) + '</b></p>' +
         (pays.length ? '<ul class="mini-list">' + pays.slice(0, 12).map(function (p) { return '<li><span><b>' + esc(fmtMonth(p.month)) + '</b><small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><span><b>' + inr(p.amount) + '</b> <button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="Receipt">🧾</button></span></li>'; }).join('') + '</ul>' : '<p class="muted">No payments yet.</p>');
     }
+    if (isAdmin()) body += '<div id="student-parent-box">' + studentParentHTML(s) + '</div>';
     body += '<div class="form-actions">' + (isAdmin() ? '<button class="btn ghost" data-act="pay-add" data-student="' + esc(s.id) + '">💰 Record payment</button>' : '') + '<button class="btn primary" data-act="student-edit" data-id="' + esc(s.id) + '">✏️ Edit</button></div>';
     openModal({ title: 'Student details', size: 'wide', body: body });
+    if (isAdmin()) PX.loadLinks().then(function () { var b = document.getElementById('student-parent-box'); if (b) b.innerHTML = studentParentHTML(s); });
   }
 
   /* =====================================================================
@@ -1725,6 +1743,7 @@
       field('Temporary password *', '<span class="pw-wrap"><input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required><button type="button" class="pw-toggle" data-act="pw-toggle" aria-label="Show password">👁️</button></span>', '<small class="hint">At least 8 characters. <button type="button" class="link" data-act="pw-generate">Suggest one</button></small>') +
       '</div><p class="note">Share the email and temporary password with the teacher (for example on WhatsApp). They can change it in Settings → My account.</p><button class="btn primary">Create login</button></form></details></section>';
 
+    html += parentLoginsCardHTML();
     html += '<section class="card"><h2>🔐 My password</h2><p class="muted small">Signed in as ' + esc(ME.email || '') + '</p>' + pwForm + '</section>' + secNote;
 
     var kb = (Store.usageBytes() / 1024).toFixed(1);
@@ -1745,6 +1764,185 @@
     html += '<p class="muted small center">The Little Wings Dashboard v' + APP_VERSION + ' · Times in India Standard Time</p>';
     return html;
   }
+  /* =====================================================================
+   * PARENT LOGINS + NOTICES (v2.2)
+   * Parent logins are managed by the lw-admin Edge Function. Links and
+   * notices are read straight from the database (RLS decides what each
+   * person may see); they are not part of the offline Store.
+   * ===================================================================== */
+  var PX = (function () {
+    var links = [], linksAt = 0, linksP = null, notices = [], noticesAt = 0, noticesP = null, noticesErr = '', pollT = null;
+    function reset() { links = []; linksAt = 0; notices = []; noticesAt = 0; noticesErr = ''; clearInterval(pollT); pollT = null; }
+    function loadLinks(force) {
+      if (!SB || !isAdmin()) return Promise.resolve(links);
+      if (!force && linksP) return linksP;
+      if (!force && Date.now() - linksAt < 15000) return Promise.resolve(links);
+      linksP = SB.from('parent_students').select('user_id,student_id').then(function (r) {
+        linksP = null;
+        if (!r.error) { links = r.data || []; linksAt = Date.now(); }
+        return links;
+      }, function () { linksP = null; return links; });
+      return linksP;
+    }
+    function loadNotices(force) {
+      if (!SB || !ME) return Promise.resolve(notices);
+      if (!force && noticesP) return noticesP;
+      noticesP = SB.from('notices').select('id,title,body,audience,pinned,expires_on,created_by,author_name,author_role,created_at')
+        .order('pinned', { ascending: false }).order('created_at', { ascending: false }).limit(200).then(function (r) {
+          noticesP = null;
+          if (r.error) { noticesErr = navigator.onLine === false ? 'You are offline. Notices will load when the internet is back.' : 'Could not load notices (' + r.error.message + ').'; }
+          else { notices = r.data || []; noticesAt = Date.now(); noticesErr = ''; }
+          return notices;
+        }, function () { noticesP = null; noticesErr = 'You are offline. Notices will load when the internet is back.'; return notices; });
+      return noticesP;
+    }
+    function startPoll() {
+      if (pollT) return;
+      pollT = setInterval(function () {
+        if (!ME || parseHash().name !== 'notices') { clearInterval(pollT); pollT = null; return; }
+        if (document.visibilityState === 'hidden' || userIsTyping()) return;
+        loadNotices(true).then(function () { if (parseHash().name === 'notices' && !userIsTyping() && !$('#modal-root').innerHTML) refreshNoticeList(); });
+      }, 30000);
+    }
+    return {
+      reset: reset, loadLinks: loadLinks, loadNotices: loadNotices, startPoll: startPoll,
+      links: function () { return links; }, linksLoaded: function () { return linksAt > 0; },
+      notices: function () { return notices; }, noticesLoaded: function () { return noticesAt > 0; }, noticesAt: function () { return noticesAt; }, noticesErr: function () { return noticesErr; }
+    };
+  })();
+
+  function parentById(id) { return S.parents.filter(function (p) { return p.id === id; })[0] || null; }
+  function childrenOf(parentId) { return PX.links().filter(function (l) { return l.user_id === parentId; }).map(function (l) { return studentById(l.student_id); }).filter(Boolean); }
+  function parentsOf(studentId) { return PX.links().filter(function (l) { return l.student_id === studentId; }).map(function (l) { return parentById(l.user_id); }).filter(Boolean); }
+  function fmtMobile(d) { return d && d.length === 10 ? d.slice(0, 5) + ' ' + d.slice(5) : (d || '—'); }
+
+  function parentLoginsCardHTML() {
+    if (!isAdmin()) return '';
+    if (!PX.linksLoaded()) PX.loadLinks().then(function () { if (parseHash().name === 'settings' && !userIsTyping()) render(); });
+    var list = S.parents.slice().sort(byName);
+    return '<section class="card" id="parent-logins"><h2>👨‍👩‍👧 Parent logins</h2><p class="muted">Parents sign in to the <b>Little Wings Parents</b> app with their <b>mobile number</b> and a password you set. They see only their own child’s attendance and the notices for the school and their child’s class — no fees, no other children.</p>' +
+      (list.length ? '<ul class="mini-list">' + list.map(function (p) {
+        var kids = childrenOf(p.id);
+        return '<li><span><b>' + esc(p.name) + '</b><small>📱 ' + esc(fmtMobile(p.phone)) + ' · ' + (kids.length ? kids.map(function (k) { return esc(k.name) + ' (' + esc(className(k.classId)) + ')'; }).join(', ') : (PX.linksLoaded() ? '<span class="coral-t">no child linked</span>' : '…')) + '</small></span>' +
+          '<span class="row gap"><button class="btn small ghost" data-act="parent-edit" data-id="' + esc(p.id) + '">Edit</button><button class="btn small ghost" data-act="user-reset" data-id="' + esc(p.id) + '">New password</button><button class="icon-btn" data-act="parent-del" data-id="' + esc(p.id) + '" title="Remove login" aria-label="Remove login for ' + esc(p.name) + '">🗑️</button></span></li>';
+      }).join('') + '</ul>' : '<p class="muted">No parent logins yet.</p>') +
+      '<div class="row gap wrap"><button class="btn primary" data-act="parent-add">➕ Add parent login</button><a class="btn ghost" href="' + esc(PARENTS_APP_URL) + '" target="_blank" rel="noopener">Open Parents app ↗</a></div>' +
+      '<p class="muted small">Tip: you can also create a parent login from a student’s details (Classes → tap the child).</p></section>';
+  }
+  function studentParentHTML(s) {
+    var ps = parentsOf(s.id);
+    return '<h4>📲 Parents app</h4>' + (ps.length ? '<ul class="mini-list">' + ps.map(function (p) {
+      return '<li><span><b>' + esc(p.name) + '</b><small>Login: ' + esc(fmtMobile(p.phone)) + '</small></span><span class="row gap"><button class="btn small ghost" data-act="parent-edit" data-id="' + esc(p.id) + '">Edit</button></span></li>';
+    }).join('') + '</ul>' : (PX.linksLoaded() ? '<p class="muted">No parent login for this child yet.</p>' : '<p class="muted">Checking…</p>')) +
+      '<p><button class="btn small ghost" data-act="parent-add" data-student="' + esc(s.id) + '">➕ Create parent login</button></p>';
+  }
+  function childPickerHTML(selected) {
+    var sel = {}; selected.forEach(function (id) { sel[id] = 1; });
+    var kids = activeStudents().slice().sort(function (a, b) { return a.classId === b.classId ? byName(a, b) : CLASSES.map(function (c) { return c.id; }).indexOf(a.classId) - CLASSES.map(function (c) { return c.id; }).indexOf(b.classId); });
+    if (!kids.length) return '<p class="note warn">Add the child on the Classes page first.</p>';
+    return '<input type="search" class="kid-filter" placeholder="🔍 Search child" data-input="kid-filter" aria-label="Search child">' +
+      '<div class="kid-picker">' + kids.map(function (k) {
+        return '<label class="kid-opt" data-name="' + esc((k.name + ' ' + (k.parentName || '') + ' ' + (k.phone || '')).toLowerCase()) + '"><input type="checkbox" name="kids" value="' + esc(k.id) + '"' + (sel[k.id] ? ' checked' : '') + '><span><b>' + esc(k.name) + '</b><small>' + esc(className(k.classId)) + (k.parentName ? ' · ' + esc(k.parentName) : '') + '</small></span></label>';
+      }).join('') + '</div>';
+  }
+  function openParentForm(p, studentId) {
+    var preset = studentId ? studentById(studentId) : null;
+    var selected = p ? childrenOf(p.id).map(function (k) { return k.id; }) : [];
+    var name = p ? p.name : (preset ? preset.parentName || '' : '');
+    var phone = p ? p.phone : (preset ? normPhone(preset.phone || preset.whatsapp || '') : '');
+    if (preset && !p) {
+      selected = [preset.id];
+      var ph = normPhone(preset.phone);
+      if (validPhone(ph)) activeStudents().forEach(function (k) { if (k.id !== preset.id && normPhone(k.phone) === ph) selected.push(k.id); }); // siblings
+    }
+    openModal({
+      title: p ? 'Edit parent login' : 'Create parent login',
+      body: '<form class="form" novalidate>' +
+        field('Parent name *', '<input name="name" maxlength="60" autocomplete="off" value="' + esc(name) + '" required>') +
+        field('Mobile number (login ID) *', '<span class="tel-wrap"><span class="cc">+91</span><input name="phone" type="tel" inputmode="numeric" maxlength="14" autocomplete="off" value="' + esc(phone) + '" placeholder="98765 43210" required></span>') +
+        (p ? '' : field('Temporary password *', '<span class="pw-wrap"><input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required><button type="button" class="pw-toggle" data-act="pw-toggle" aria-label="Show password">👁️</button></span>', '<small class="hint">At least 8 characters. <button type="button" class="link" data-act="pw-generate">Suggest one</button></small>')) +
+        '<div class="field" data-field="kids"><span class="lbl">Child / children *</span>' + childPickerHTML(selected) + '<small class="hint">Tick brothers and sisters too, so one login shows all of them.</small></div>' +
+        (p ? '<p class="muted small">To change the password, use <b>New password</b> in the list.</p>' : '') +
+        '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">' + (p ? 'Save' : 'Create login') + '</button></div></form>',
+      onSubmit: function (form, fd) {
+        var nm = String(fd.get('name') || '').trim(), mob = normPhone(fd.get('phone')), pw = String(fd.get('password') || ''), kids = fd.getAll('kids').map(String);
+        if (nm.length < 2) { fieldError(form, 'name', 'Enter the parent’s name'); return false; }
+        if (!validPhone(mob)) { fieldError(form, 'phone', 'Enter a valid 10-digit mobile number'); return false; }
+        var dup = S.parents.filter(function (x) { return x.phone === mob && (!p || x.id !== p.id); })[0];
+        if (dup) { fieldError(form, 'phone', 'A parent login with this number already exists (' + dup.name + '). Edit that one to add this child.'); return false; }
+        if (!p && pw.length < 8) { fieldError(form, 'password', 'Use at least 8 characters'); return false; }
+        if (!kids.length) { var kf = form.querySelector('[data-field=kids]'); kf.classList.add('invalid'); var e = document.createElement('small'); e.className = 'err'; e.textContent = 'Choose at least one child'; kf.appendChild(e); return false; }
+        var call = p ? fnCall('update_parent', { id: p.id, name: nm, phone: mob, studentIds: kids }) : fnCall('create_parent', { name: nm, phone: mob, password: pw, studentIds: kids });
+        return call.then(function () {
+          return Promise.all([Store.sync(false), PX.loadLinks(true)]);
+        }).then(function () {
+          loadAll(); render();
+          if (!p) setTimeout(function () { showParentShare(nm, mob, pw, kids); }, 0);
+          else toast('Parent login updated');
+          return true;
+        }).catch(function (err) { fieldError(form, 'phone', err.message); return false; });
+      }
+    });
+  }
+  function showParentShare(name, mob, pw, kids) {
+    var names = kids.map(function (id) { var k = studentById(id); return k ? k.name : ''; }).filter(Boolean).join(', ');
+    var msg = 'Hello ' + name + '! 🙏 Your login for the Little Wings Parents app (' + names + '):\n' + PARENTS_APP_URL + '\nMobile number: ' + mob + '\nPassword: ' + pw + '\nOpen the link, sign in, then add it to your Home Screen. — ' + S.settings.schoolName;
+    openModal({
+      title: 'Parent login created ✅',
+      body: '<p>Share these details with <b>' + esc(name) + '</b>:</p><div class="callout"><p>🔗 ' + esc(PARENTS_APP_URL) + '<br>📱 Mobile: <b>' + esc(fmtMobile(mob)) + '</b><br>🔑 Password: <b>' + esc(pw) + '</b><br>🧒 ' + esc(names) + '</p></div>' +
+        '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Done</button><a class="btn primary" href="' + esc(waHref(mob, msg)) + '" target="_blank" rel="noopener">Send on WhatsApp</a></div>'
+    });
+  }
+
+  /* ----- Notices page ----- */
+  function noticeAudiences() {
+    return isAdmin() ? [{ value: 'all', label: '🏫 Whole school' }].concat(CLASSES.map(function (c) { return { value: c.id, label: c.emoji + ' ' + c.name + ' only' }; })) : (CLASS_BY_ID[ME.classId] ? [{ value: ME.classId, label: CLASS_BY_ID[ME.classId].emoji + ' ' + CLASS_BY_ID[ME.classId].name + ' only' }] : []);
+  }
+  function canEditNotice(n) { return isAdmin() || (n.created_by === ME.userId && n.audience === ME.classId); }
+  function audienceTag(a) { return a === 'all' ? '<span class="tag n-all">🏫 School</span>' : '<span class="tag n-class" style="--c:' + esc((CLASS_BY_ID[a] || {}).color || '#38a8e0') + '">' + esc((CLASS_BY_ID[a] || {}).emoji || '') + ' ' + esc(className(a)) + '</span>'; }
+  function noticeDate(iso) { try { return new Intl.DateTimeFormat('en-IN', { timeZone: TZ, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(iso)); } catch (e) { return ''; } }
+  function noticeListHTML() {
+    var list = PX.notices();
+    if (!PX.noticesLoaded()) return PX.noticesErr() ? '<p class="note warn">' + esc(PX.noticesErr()) + '</p>' : '<div class="spinner" aria-hidden="true"></div>';
+    var today = todayISO();
+    var out = PX.noticesErr() ? '<p class="note warn">' + esc(PX.noticesErr()) + '</p>' : '';
+    if (!list.length) return out + emptyState('📢', 'No notices yet', 'Post a notice above. Parents see it in the Little Wings Parents app.');
+    return out + '<div class="notice-list">' + list.map(function (n) {
+      var expired = n.expires_on && n.expires_on < today;
+      return '<article class="notice' + (n.pinned ? ' pinned' : '') + (expired ? ' expired' : '') + '"><div class="notice-top">' + audienceTag(n.audience) + (n.pinned ? '<span class="tag n-pin">📌 Pinned</span>' : '') + (expired ? '<span class="tag">Expired</span>' : '') + '</div>' +
+        '<h3>' + esc(n.title) + '</h3>' + (n.body ? '<p class="notice-body">' + esc(n.body) + '</p>' : '') +
+        '<p class="muted small">' + esc(n.author_name || (n.author_role === 'admin' ? 'School office' : 'Teacher')) + ' · ' + esc(noticeDate(n.created_at)) + (n.expires_on ? ' · shown until ' + esc(fmtDate(n.expires_on)) : '') + '</p>' +
+        (canEditNotice(n) ? '<div class="row gap"><button class="btn small ghost" data-act="notice-pin" data-id="' + esc(n.id) + '">' + (n.pinned ? 'Unpin' : '📌 Pin') + '</button><button class="btn small ghost danger-t" data-act="notice-del" data-id="' + esc(n.id) + '">🗑️ Delete</button></div>' : '') + '</article>';
+    }).join('') + '</div>';
+  }
+  function refreshNoticeList() { var l = document.getElementById('notice-list'); if (l) l.innerHTML = noticeListHTML(); }
+  function viewNotices() {
+    var auds = noticeAudiences();
+    if (Date.now() - PX.noticesAt() > 10000) PX.loadNotices(true).then(function () { if (parseHash().name === 'notices') refreshNoticeList(); });
+    PX.startPoll();
+    var form = auds.length ? '<section class="card"><h2>📢 Post a notice</h2><form class="form" data-form="notice-add" novalidate>' +
+      field('Title *', '<input name="title" maxlength="120" required placeholder="e.g. Holiday on Friday">') +
+      field('Message', '<textarea name="body" rows="3" maxlength="2000" placeholder="Details for parents"></textarea>') +
+      '<div class="grid2">' + field('Who should see it', auds.length > 1 ? '<select name="audience">' + options(auds, 'all') + '</select>' : '<input type="hidden" name="audience" value="' + esc(auds[0].value) + '"><span class="ro">' + esc(auds[0].label) + '</span>') +
+      field('Show until (optional)', '<input type="date" name="expires_on" min="' + esc(todayISO()) + '">') + '</div>' +
+      '<label class="check"><input type="checkbox" name="pinned" value="1"> 📌 Pin to the top</label>' +
+      '<button class="btn primary">Post notice</button></form>' +
+      '<p class="muted small">' + (isAdmin() ? 'Parents see whole-school notices and notices for their child’s class in the Little Wings Parents app.' : 'You can post to your class only. Parents of your class see it in the Little Wings Parents app.') + '</p></section>'
+      : '<p class="note warn">Your login has no class yet, so you can read school notices but not post. Ask the admin.</p>';
+    return form + '<section class="card"><div class="row between"><h2>🗂️ Notices</h2><button class="btn small ghost" data-act="notices-refresh">🔄 Refresh</button></div><div id="notice-list">' + noticeListHTML() + '</div></section>';
+  }
+  FORMS_EXTRA['notice-add'] = function (f, fd) {
+    var title = String(fd.get('title') || '').trim(), body = String(fd.get('body') || '').trim(), aud = String(fd.get('audience') || ''), exp = String(fd.get('expires_on') || '');
+    if (!title) return fieldError(f, 'title', 'Please write a title');
+    if (noticeAudiences().map(function (a) { return a.value; }).indexOf(aud) < 0) return fieldError(f, 'audience', 'Choose who should see it');
+    if (exp && (!isISODate(exp) || exp < todayISO())) return fieldError(f, 'expires_on', 'Pick today or a later date');
+    if (navigator.onLine === false) { toast('You are offline. Post the notice when the internet is back.', 'err'); return; }
+    return SB.from('notices').insert({ title: title, body: body, audience: aud, pinned: fd.get('pinned') === '1', expires_on: exp || null }).then(function (r) {
+      if (r.error) { toast('Could not post: ' + (/row-level|permission/i.test(r.error.message) ? 'not allowed for your account' : r.error.message), 'err'); return; }
+      f.reset(); toast('Notice posted 📢');
+      return PX.loadNotices(true).then(refreshNoticeList);
+    });
+  };
   function syncInfoHTML() {
     var s = Store.status();
     return '<p class="muted small">☁️ ' + (s.lastSync ? 'Last synced ' + esc(new Intl.DateTimeFormat('en-IN', { timeZone: TZ, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(s.lastSync))) + ' IST' : 'Not synced yet') +
@@ -1793,6 +1991,8 @@
       });
     }
   };
+
+  Object.keys(FORMS_EXTRA).forEach(function (k) { FORMS[k] = FORMS_EXTRA[k]; });
 
   function exportCSV(t) {
     var rows, date = todayISO();
@@ -2047,16 +2247,51 @@
     },
     'user-reset': function (el) {
       var u = S.users.filter(function (x) { return x.id === attr(el, 'id'); })[0];
+      var par = !u && parentById(attr(el, 'id'));
+      if (par) u = { id: par.id, name: par.name, email: 'mobile ' + fmtMobile(par.phone) };
       if (!u) return;
       openModal({
         title: 'New password · ' + u.name, body: '<form class="form" novalidate>' + pwInput('password', 'New password (at least 8 characters)', 'new-password', '<small class="hint"><button type="button" class="link" data-act="pw-generate">Suggest one</button></small>') +
-          '<p class="muted small">Tell ' + esc(u.name) + ' the new password. Their email stays ' + esc(u.email) + '.</p><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">Set new password</button></div></form>',
+          '<p class="muted small">Tell ' + esc(u.name) + ' the new password. ' + (par ? 'Their login ID stays the ' + esc(u.email) + '.' : 'Their email stays ' + esc(u.email) + '.') + '</p><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">Set new password</button></div></form>',
         onSubmit: function (form, fd) {
           var pw = String(fd.get('password') || '');
           if (pw.length < 8) { fieldError(form, 'password', 'Use at least 8 characters'); return false; }
           return fnCall('reset_password', { id: u.id, password: pw }).then(function () { toast('New password set for ' + u.name); return true; })
             .catch(function (err) { fieldError(form, 'password', err.message); return false; });
         }
+      });
+    },
+    'parent-add': function (el) { if (!isAdmin()) return; var sid = attr(el, 'student'); PX.loadLinks().then(function () { openParentForm(null, sid); }); },
+    'parent-edit': function (el) { var p = parentById(attr(el, 'id')); if (p && isAdmin()) PX.loadLinks().then(function () { openParentForm(p); }); },
+    'parent-del': function (el) {
+      var p = parentById(attr(el, 'id'));
+      if (!p) return;
+      confirmBox('Remove the parent login for ' + p.name + ' (' + fmtMobile(p.phone) + ')? They will no longer be able to open the Parents app.', { ok: 'Remove login' }).then(function (ok) {
+        if (!ok) return;
+        fnCall('delete_parent', { id: p.id }).then(function () { toast('Parent login removed'); return Promise.all([Store.sync(false), PX.loadLinks(true)]); })
+          .then(function () { loadAll(); render(); }).catch(function (err) { toast(err.message, 'err'); });
+      });
+    },
+    'notices-refresh': function () { PX.loadNotices(true).then(refreshNoticeList); },
+    'notice-pin': function (el) {
+      var n = PX.notices().filter(function (x) { return x.id === attr(el, 'id'); })[0];
+      if (!n) return;
+      SB.from('notices').update({ pinned: !n.pinned }).eq('id', n.id).select('id').then(function (r) {
+        if (r.error || !r.data || !r.data.length) { toast('Could not change the notice' + (r.error ? ': ' + r.error.message : ' (not allowed)'), 'err'); return; }
+        toast(n.pinned ? 'Unpinned' : 'Pinned to the top 📌');
+        return PX.loadNotices(true).then(refreshNoticeList);
+      });
+    },
+    'notice-del': function (el) {
+      var n = PX.notices().filter(function (x) { return x.id === attr(el, 'id'); })[0];
+      if (!n) return;
+      confirmBox('Delete the notice “' + n.title + '”? Parents will no longer see it.', { ok: 'Delete notice' }).then(function (ok) {
+        if (!ok) return;
+        SB.from('notices').delete().eq('id', n.id).select('id').then(function (r) {
+          if (r.error || !r.data || !r.data.length) { toast('Could not delete' + (r.error ? ': ' + r.error.message : ' (not allowed)'), 'err'); return; }
+          toast('Notice deleted');
+          return PX.loadNotices(true).then(refreshNoticeList);
+        });
       });
     },
     'backup': doBackup,
@@ -2086,7 +2321,11 @@
   var INPUTS = {
     'student-search': function (el) { UI.search = el.value; var l = $('#student-list'); if (l) l.innerHTML = studentListHTML(UI.classTab); },
     'enq-search': function (el) { UI.enqSearch = el.value; var l = $('#enq-list'); if (l) l.innerHTML = enqListHTML(); },
-    'staff-search': function (el) { UI.staffSearch = el.value; var l = $('#staff-list'); if (l) l.innerHTML = staffListHTML(); }
+    'staff-search': function (el) { UI.staffSearch = el.value; var l = $('#staff-list'); if (l) l.innerHTML = staffListHTML(); },
+    'kid-filter': function (el) {
+      var q = el.value.trim().toLowerCase(), box = el.parentNode.querySelector('.kid-picker');
+      if (box) $$('.kid-opt', box).forEach(function (o) { o.hidden = !!q && o.getAttribute('data-name').indexOf(q) < 0; });
+    }
   };
 
   document.addEventListener('click', function (e) {

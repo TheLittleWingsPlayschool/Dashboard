@@ -1,16 +1,16 @@
 /*!
- * The Little Wings Dashboard service worker (v2.1.0)
+ * The Little Wings Dashboard service worker (v2.2.0)
  * Caches the app shell so the sign-in page and UI still load offline.
  * NEVER caches or intercepts Supabase API / Auth / Realtime requests.
  * Only same-origin GET requests are handled.
  */
-var CACHE_NAME = 'lw-dash-v2.1.0';
+var CACHE_NAME = 'lw-dash-v2.2.0';
 var PRECACHE = [
   './',
   './index.html',
-  './style.css?v=2.1.0',
-  './app.js?v=2.1.0',
-  './config.js?v=2.1.0',
+  './style.css?v=2.2.0',
+  './app.js?v=2.2.0',
+  './config.js?v=2.2.0',
   './assets/vendor/supabase-js-2.119.0.js',
   './assets/logo.jpeg',
   './assets/icons/icon-192.png',
@@ -81,7 +81,8 @@ self.addEventListener('install', function (event) {
 self.addEventListener('activate', function (event) {
   event.waitUntil(
     caches.keys().then(function (keys) {
-      return Promise.all(keys.filter(function (k) { return k !== CACHE_NAME; }).map(function (k) {
+      // Only remove this app's old caches (the Parents app in /parents/ keeps its own).
+      return Promise.all(keys.filter(function (k) { return k.indexOf('lw-dash-') === 0 && k !== CACHE_NAME; }).map(function (k) {
         return caches.delete(k);
       }));
     }).then(function () { return self.clients.claim(); })
@@ -102,6 +103,9 @@ self.addEventListener('fetch', function (event) {
 
   // Only same-origin GET. POSTs, WebSockets and third-party calls go to the network.
   if (!isSameOriginGet(request, url)) return;
+
+  // The Parents app (/parents/) has its own service worker; never serve it from here.
+  if (/\/parents(\/|$)/.test(url.pathname)) return;
 
   if (isHtmlRequest(request, url)) {
     event.respondWith(networkFirst(request));

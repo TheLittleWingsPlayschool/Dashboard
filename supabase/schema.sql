@@ -16,6 +16,9 @@
 --  * Public sign-ups are rejected by the auth trigger. Accounts are created
 --    only by the lw-admin Edge Function (first admin once, then teachers by
 --    the admin).
+-- v2.2: run supabase/parents.sql after this file (parent role, parent_students,
+-- notices, parent-only RPCs). It also replaces app.handle_new_user and the
+-- settings_select policy defined below.
 -- =====================================================================
 
 create schema if not exists app;

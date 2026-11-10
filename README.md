@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.1, cloud)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.2, cloud) + Parents app
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -15,19 +15,21 @@ admin and teachers see the same data on every phone, each with their own login.
 - **Fees**: record payments (Cash/UPI/Bank) with auto-numbered, printable receipts and WhatsApp sharing; monthly pending list.
 - **Enquiries**: leads and follow-ups; convert an enquiry into a student.
 - **Staff**: role, phone, class and monthly salary (admin only).
-- **Settings**: school details, class teachers, **teacher logins**, change password, **backup/restore (JSON)**, **CSV exports**, and a one-time **import of old data** from v1.
+- **Notices** (new in v2.2): admin posts to the whole school or one class; teachers post to their own class. Pin, optional "show until" date, delete. Parents see them in the Parents app.
+- **Settings**: school details, class teachers, **teacher logins**, **parent logins**, change password, **backup/restore (JSON)**, **CSV exports**, and a one-time **import of old data** from v1.
 - **Sync**: changes save online immediately. If the phone is offline they wait on the phone and upload automatically when the internet is back. The badge at the top shows **Online / Syncing / Offline · N / Sync problem** (tap it to retry). Other phones update live (Supabase Realtime), with a 30-second poll and a refresh whenever the app is reopened as back-ups.
 
 ## Roles and what the database allows
 Access is enforced **in the database** with Row Level Security (RLS), not only hidden in the app:
 
-| | Admin | Teacher |
-|---|---|---|
-| Students | all classes: read, add, edit, delete | **own class only**: read, add, edit (no delete) |
-| Attendance | all classes | **own class only** |
-| Monthly fees, payments/receipts, enquiries, staff & salaries | full access | **no access at all** (the database returns nothing) |
-| School settings | read and edit | read only (school name) |
-| Logins | create / edit / reset password / remove teachers | change own password |
+| | Admin | Teacher | Parent (Parents app) |
+|---|---|---|---|
+| Students | all classes: read, add, edit, delete | **own class only**: read, add, edit (no delete) | **only their own child(ren)**: name and class, nothing else |
+| Attendance | all classes | **own class only** | **only their own child's** status per day (never the rest of the class) |
+| Notices | all: post, pin, delete | read school-wide + own class; post/pin/delete **own** notices for own class | read school-wide + their children's classes (not expired) |
+| Monthly fees, payments/receipts, enquiries, staff & salaries | full access | **no access at all** (the database returns nothing) | **no access at all** |
+| School settings | read and edit | read only (school name) | no access |
+| Logins | create / edit / reset password / remove teachers and parents | change own password | change own password |
 
 ## First-time setup (the owner does this once)
 1. Open https://thelittlewingsplayschool.github.io/Dashboard/ .
@@ -46,6 +48,36 @@ password in **Settings → My account**. From the same list you can **Edit** (na
 
 Teacher accounts are created by a small server function (`supabase/functions/lw-admin`), which checks that the
 caller is the admin. The secret service key lives only on Supabase's servers, never in this website.
+
+## Parents app (new in v2.2)
+A separate app for parents: **https://thelittlewingsplayschool.github.io/Dashboard/parents/** (folder `parents/`).
+Parents sign in with their **mobile number** and a password from the school. They see:
+- the child's name and class (a switcher if they have more than one child at the school),
+- **Today**: present / absent / leave / half-day / not marked yet,
+- **This month**: present, absent, leave and half-day counts and the attendance %,
+- a **monthly calendar** (green present, red absent, yellow leave, blue half-day, purple Sunday/holiday, white not marked) with previous/next month,
+- **Notices** from the school and from their child's class (pinned first, newest first, marked *School* or the class name). New notices appear live, the app also checks every minute and when it is reopened, and there is a 🔄 refresh button / pull-down to refresh.
+
+It installs like the dashboard (iPhone Safari: Share → Add to Home Screen; Android Chrome: ⋮ → Install app) with its own
+"Little Wings Parents" icon. Without internet it opens and shows the last saved view with an "offline" note.
+**Sign out** (👤 → Sign out) removes the child's details from the phone. *Forgot password?* The app tells parents to ask the
+school office (+91 79955 54105); the admin sets a new one.
+
+### Creating a parent login (admin)
+1. Add the child on **Classes** first.
+2. Either open the child (Classes → tap the name) → **📲 Parents app → Create parent login**, or go to
+   **Settings → Parent logins → Add parent login**.
+3. Check the parent's name and **10-digit mobile number** (this is their login ID), tap *Suggest one* for a temporary password,
+   tick the child — and brothers/sisters, so one login shows all of them — and tap **Create login**.
+4. Tap **Send on WhatsApp** to send the parent the app link, their mobile number and password.
+
+From **Settings → Parent logins** you can **Edit** (name, mobile number, linked children), set a **New password**, or
+**remove** the login. One mobile number = one login.
+
+How it works: parent logins are created by the `lw-admin` server function (admin only). Internally the mobile number is
+stored as the address `<mobile>@parents.littlewings.app`; no email is ever sent to it. Parents cannot read any table
+directly — they get their child's data only through two database functions (`parent_children`, `parent_attendance`) that
+check the link between the parent and the child (`parent_students`). SQL: `supabase/parents.sql`.
 
 ## Optional Supabase settings (dashboard.supabase.com → project *little-wings-dashboard*)
 Nothing is required for normal use. Only the **"Forgot password?" email link** needs this:
@@ -80,7 +112,9 @@ After the first visit, the app shell (the pages, styles, icons and the sign-in s
 - `manifest.webmanifest`, `sw.js`, `assets/icons/` — PWA manifest, service worker and icons (so the app can be installed and the shell works offline).
 - `assets/vendor/supabase-js-2.119.0.js` — the official Supabase JavaScript client (bundled, no CDN needed).
 - `supabase/schema.sql` — tables, RLS policies and triggers (documentation copy of what runs in the database).
-- `supabase/functions/lw-admin/index.ts` — server function for creating the first admin and managing teacher logins.
+- `supabase/parents.sql` — v2.2 additions: parent role, `parent_students`, `notices`, parent-only RPCs and their RLS (run after `schema.sql`).
+- `supabase/functions/lw-admin/index.ts` — server function for creating the first admin and managing teacher and parent logins.
+- `parents/` — the Parents app (`index.html`, `app.js`, `style.css`, `manifest.webmanifest`, `sw.js`, `icons/`). It reuses `config.js`, the bundled Supabase client and the logo from the dashboard folder.
 
 ## Limitations
 - **Last write wins**: if two people edit the same record at the same moment, the later save wins. Attendance is stored per class per day, so different classes never clash.
@@ -88,3 +122,4 @@ After the first visit, the app shell (the pages, styles, icons and the sign-in s
 - The offline copy uses the phone's browser storage (about 5 MB), enough for several years of a small school. Signing out removes it from that phone, along with any changes not yet uploaded (the app warns first). The installed app’s shell (pages and icons) stays on the phone so you can still reach the sign-in screen.
 - Supabase's free plan pauses a project after about a week with no activity. Normal daily use keeps it awake. If it pauses, open the project in the Supabase dashboard and click **Restore**.
 - Password-reset emails need the URL setting above and are limited by Supabase's free email sender.
+- Parents app: there is no school holiday calendar yet, so only Sundays are shown as holidays; other closed days show as "not marked". Notices are text only (no photos/attachments). There are no push notifications: new notices show when the app is open (live) or next opened.
