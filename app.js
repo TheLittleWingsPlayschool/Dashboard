@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.0.0';
+  var APP_VERSION = '2.1.0';
   var TZ = 'Asia/Kolkata';
 
   var CLASSES = [
@@ -778,7 +778,7 @@
       '<button class="btn primary big block">Sign in 🔓</button>' +
       '<p class="center small"><button type="button" class="link" data-act="auth-forgot">Forgot password?</button></p>' +
       '<p id="setup-hint" class="note center" hidden>No admin account exists yet. <button type="button" class="link strong" data-act="auth-setup">Create the admin account</button></p>' +
-      '</form>'));
+      '</form>' + installHintHTML(true)));
     var f = $('#login-form');
     f.addEventListener('submit', function (e) {
       e.preventDefault();
@@ -951,6 +951,10 @@
       if (RECOVERY) { loadAll(); return showSetNewPassword(); }
       if (!sess) { Store.reset(); ME = null; loadAll(); return showLogin(); }
       startSession(sess.user);
+    }).catch(function () {
+      if (ME) return;
+      Store.reset(); ME = null; loadAll();
+      showLogin({ skipStatus: true, message: 'You appear to be offline. Open the app again when you have internet, or sign in if this phone already has a saved session.' });
     });
   }
 
@@ -1691,7 +1695,9 @@
     if (!isAdmin()) {
       return '<section class="card"><h2>👤 My account</h2><p><b>' + esc(ME.name) + '</b> · Teacher, ' + esc(className(ME.classId)) + '<br><small class="muted">' + esc(ME.email || '') + '</small></p></section>' +
         '<section class="card"><h3>🔐 Change my password</h3>' + pwForm + '</section>' + secNote +
-        '<div class="callout"><b>☁️ Saved online</b><p>Attendance and student details you save here go to the school’s online database, so the admin sees them on their phone too. If you are offline, changes wait on this phone and upload automatically when the internet is back (watch the badge at the top).</p></div>' + syncInfoHTML();
+        '<div class="callout"><b>☁️ Saved online</b><p>Attendance and student details you save here go to the school’s online database, so the admin sees them on their phone too. If you are offline, changes wait on this phone and upload automatically when the internet is back (watch the badge at the top).</p></div>' + syncInfoHTML() +
+        installHintHTML() +
+        '<p class="muted small center">The Little Wings Dashboard v' + APP_VERSION + ' · Times in India Standard Time</p>';
     }
     var st = S.settings;
     var html = '<section class="card"><h2>🏫 School details</h2><form class="form" data-form="school" novalidate><div class="grid2">' +
@@ -1735,6 +1741,7 @@
     }
     html += '<h3>Export to Excel (CSV)</h3><div class="row gap wrap">' + ['students', 'attendance', 'payments', 'enquiries', 'staff'].map(function (t) { return '<button class="btn small ghost" data-act="csv" data-t="' + t + '">📄 ' + cap(t) + '</button>'; }).join('') + '</div>' +
       '<details class="danger-zone"><summary>This device</summary><p>Remove this phone’s offline copy and sign out. Online data is not affected. Unsynced changes on this phone would be lost.</p><button class="btn danger" data-act="erase">Clear this device &amp; sign out</button></details></section>';
+    html += installHintHTML();
     html += '<p class="muted small center">The Little Wings Dashboard v' + APP_VERSION + ' · Times in India Standard Time</p>';
     return html;
   }
@@ -1912,6 +1919,7 @@
     'auth-forgot': function () { showForgot(); },
     'auth-setup': function () { showSetup(); },
     'auth-retry': function () { boot(); },
+    'install-app': function () { promptInstallApp(); },
     'pw-toggle': function (el, e) {
       if (e) e.preventDefault();
       var inp = el.parentNode.querySelector('input');
@@ -2172,5 +2180,84 @@
     });
   }
 
+  /* ----- Progressive Web App (install + service worker) ----- */
+  var deferredInstall = null, swReload = false;
+  function isStandalone() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  }
+  function installHintHTML(compact) {
+    if (isStandalone()) {
+      return compact ? '' : '<section class="card" id="install-card"><h2>📲 App</h2><p class="muted">This dashboard is installed on this device.</p></section>';
+    }
+    var btn = '<p id="install-btn-wrap"' + (deferredInstall ? '' : ' hidden') + '><button type="button" class="btn primary" data-act="install-app" id="install-btn">📲 Install app</button></p>';
+    var steps = '<ol class="install-steps">' +
+      '<li><b>iPhone (Safari):</b> tap Share (the square with the arrow) → <b>Add to Home Screen</b>.</li>' +
+      '<li><b>Android (Chrome):</b> tap ⋮ (the menu) → <b>Install app</b> or <b>Add to Home screen</b>.</li>' +
+      '</ol>';
+    if (compact) {
+      return '<div class="install-hint" id="install-card">' + btn +
+        '<details><summary>Install this app on your phone</summary>' + steps +
+        '<p class="muted small">On a computer, look for the install icon in the address bar, or use the browser menu.</p></details></div>';
+    }
+    return '<section class="card" id="install-card"><h2>📲 Install app</h2>' +
+      '<p class="muted">Add the dashboard to your Home Screen so it opens like an app. The sign-in page still works without internet; school data uses the same offline copy as before, and signing out still removes it from this phone.</p>' +
+      btn + steps +
+      '<p class="muted small">On a computer (Chrome or Edge), look for the install icon in the address bar.</p></section>';
+  }
+  function showInstallButton() {
+    var w = document.getElementById('install-btn-wrap');
+    if (w) w.hidden = !deferredInstall;
+  }
+  function promptInstallApp() {
+    if (!deferredInstall || !deferredInstall.prompt) return;
+    var ev = deferredInstall;
+    deferredInstall = null;
+    ev.prompt();
+    ev.userChoice.then(function () { showInstallButton(); }).catch(function () { showInstallButton(); });
+  }
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferredInstall = e;
+    showInstallButton();
+  });
+  window.addEventListener('appinstalled', function () {
+    deferredInstall = null;
+    showInstallButton();
+    toast('App installed. You can open it from your Home Screen.');
+  });
+  function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('./sw.js').then(function (reg) {
+      function onWaiting(worker) {
+        if (!worker) return;
+        if (!navigator.serviceWorker.controller) {
+          // First install: activate now so this visit can be used offline.
+          worker.postMessage({ type: 'SKIP_WAITING' });
+          return;
+        }
+        var bar = document.getElementById('sw-update');
+        if (!bar) return;
+        bar.hidden = false;
+        bar.onclick = function () {
+          swReload = true;
+          bar.disabled = true;
+          worker.postMessage({ type: 'SKIP_WAITING' });
+        };
+      }
+      if (reg.waiting) onWaiting(reg.waiting);
+      reg.addEventListener('updatefound', function () {
+        var w = reg.installing;
+        if (!w) return;
+        w.addEventListener('statechange', function () {
+          if (w.state === 'installed' && reg.waiting) onWaiting(reg.waiting);
+        });
+      });
+    }).catch(function () { /* ignore: app still works without a service worker */ });
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (swReload) location.reload();
+    });
+  }
+
+  registerServiceWorker();
   boot();
 })();

@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2, cloud)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.1, cloud)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -63,9 +63,21 @@ Data is safe online, but still take **Settings → Download backup (JSON)** ever
 **Restore from backup** adds the file's records to the database (same IDs are updated; nothing is deleted).
 CSV exports open in Excel/Google Sheets.
 
+## Install as an app
+The dashboard is a Progressive Web App. You can add it to your Home Screen so it opens like a regular app (no app store needed).
+
+1. **iPhone (Safari):** open the dashboard → tap **Share** (the square with the arrow) → **Add to Home Screen**.
+2. **Android (Chrome):** open the dashboard → tap **⋮** (the menu) → **Install app** or **Add to Home screen**.
+3. **Computer (Chrome or Edge):** look for the install icon in the address bar, or use the browser menu.
+
+On Android and desktop Chrome, an **Install app** button may also appear on the sign-in screen and in **Settings**. The same step-by-step is always listed there.
+
+After the first visit, the app shell (the pages, styles, icons and the sign-in screen) is stored on the phone, so the dashboard still opens without internet. School data uses the same offline copy as before: changes wait on the phone and upload when you are back online. **Signing out still removes that data from the phone**, along with any changes not yet uploaded (the app warns first). When a new version is published, a banner says **New version available — tap to refresh**.
+
 ## Files
 - `index.html`, `style.css`, `app.js` — the app. `Store` at the top of `app.js` is the only data layer (offline copy + sync).
 - `config.js` — Supabase project URL and the **publishable** key (public by design; access is controlled by login + RLS).
+- `manifest.webmanifest`, `sw.js`, `assets/icons/` — PWA manifest, service worker and icons (so the app can be installed and the shell works offline).
 - `assets/vendor/supabase-js-2.119.0.js` — the official Supabase JavaScript client (bundled, no CDN needed).
 - `supabase/schema.sql` — tables, RLS policies and triggers (documentation copy of what runs in the database).
 - `supabase/functions/lw-admin/index.ts` — server function for creating the first admin and managing teacher logins.
@@ -73,6 +85,6 @@ CSV exports open in Excel/Google Sheets.
 ## Limitations
 - **Last write wins**: if two people edit the same record at the same moment, the later save wins. Attendance is stored per class per day, so different classes never clash.
 - Receipt numbers are checked against existing receipts, but two devices recording payments while both offline could still pick the same number.
-- The offline copy uses the phone's browser storage (about 5 MB), enough for several years of a small school. Signing out removes it from that phone, along with any changes not yet uploaded (the app warns first).
+- The offline copy uses the phone's browser storage (about 5 MB), enough for several years of a small school. Signing out removes it from that phone, along with any changes not yet uploaded (the app warns first). The installed app’s shell (pages and icons) stays on the phone so you can still reach the sign-in screen.
 - Supabase's free plan pauses a project after about a week with no activity. Normal daily use keeps it awake. If it pauses, open the project in the Supabase dashboard and click **Restore**.
 - Password-reset emails need the URL setting above and are limited by Supabase's free email sender.

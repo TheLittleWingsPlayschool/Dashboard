@@ -4,12 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#38a8e0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Little Wings">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="robots" content="noindex, nofollow">
 <meta name="description" content="Admin and classes dashboard for The Little Wings Play School, Vuyyuru">
 <title>The Little Wings · Dashboard</title>
-<link rel="icon" href="assets/logo.jpeg" type="image/jpeg">
-<link rel="apple-touch-icon" href="assets/logo.jpeg">
-<link rel="stylesheet" href="style.css?v=2.0.1">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png" sizes="180x180">
+<link rel="stylesheet" href="style.css?v=2.1.0">
 </head>
 <body>
 <noscript><div class="noscript">This dashboard needs JavaScript turned on in your browser.</div></noscript>
@@ -40,8 +45,10 @@
 <div id="toast-root" aria-live="polite"></div>
 <div id="print-root" aria-hidden="true"></div>
 
-<script src="config.js?v=2.0.1"></script>
+<button type="button" id="sw-update" hidden>New version available — tap to refresh</button>
+
+<script src="config.js?v=2.1.0"></script>
 <script src="assets/vendor/supabase-js-2.119.0.js"></script>
-<script src="app.js?v=2.0.1"></script>
+<script src="app.js?v=2.1.0"></script>
 </body>
 </html>
