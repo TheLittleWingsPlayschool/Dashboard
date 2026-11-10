@@ -158,3 +158,30 @@ main.view { padding: .8rem .8rem calc(var(--nav-h) + 1.2rem + env(safe-area-inse
 .toast.err { background: var(--coral-d); } .toast.out { opacity: 0; }
 #sw-update { position: fixed; left: .8rem; right: .8rem; bottom: calc(var(--nav-h) + .8rem + env(safe-area-inset-bottom)); z-index: 50; border: 0; border-radius: 999px; padding: .8rem 1rem; background: var(--ink); color: #fff; font-weight: 800; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---------- v1.1: Fees tab + receipts ---------- */
+.bottomnav .ni { padding: .2rem .6rem; }
+.fee-due { border-radius: var(--r-s, 14px); padding: .9rem 1rem; margin: .2rem 0 .8rem; display: flex; flex-direction: column; gap: .1rem; }
+.fee-due small { font-weight: 800; text-transform: uppercase; letter-spacing: .05em; font-size: .72rem; }
+.fee-due b { font-size: 1.7rem; line-height: 1.15; }
+.fee-due span { font-size: .85rem; }
+.fee-due.due { background: var(--coral-l); color: #8f2a1f; }
+.fee-due.ok { background: var(--green-l); color: #1e6a3b; }
+.kv-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
+.kv-grid > div { background: #f6f9fc; border-radius: 12px; padding: .55rem .7rem; min-width: 0; }
+.kv-grid small { display: block; color: var(--muted); font-size: .74rem; font-weight: 700; }
+.kv-grid b { font-size: 1.02rem; overflow-wrap: anywhere; }
+.coral-t { color: var(--coral-d); } .green-t { color: var(--green-d); }
+.pay-list { list-style: none; margin: 0; padding: 0; }
+.pay-list li { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .7rem 0; border-bottom: 1px dashed var(--line); flex-wrap: wrap; }
+.pay-list li:last-child { border-bottom: 0; }
+.pay-main { min-width: 0; flex: 1 1 140px; }
+.pay-main b { display: block; font-size: 1.1rem; }
+.pay-main span { display: block; font-weight: 700; }
+.pay-main small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+.pay-list .btn { flex: 0 0 auto; }
+.sheet.wide { max-width: 720px; }
+.rcpt-preview { background: #f3f5f8; border-radius: 14px; padding: .5rem; margin: .4rem 0 .8rem; }
+.rcpt-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.rcpt-actions .btn { flex: 1 1 auto; }
+@media (max-width: 360px) { .bottomnav button { font-size: .66rem; } .bottomnav .ni { padding: .2rem .45rem; } }

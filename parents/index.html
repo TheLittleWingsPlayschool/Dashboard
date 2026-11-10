@@ -9,12 +9,13 @@
 <meta name="apple-mobile-web-app-title" content="LW Parents">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="robots" content="noindex, nofollow">
-<meta name="description" content="Little Wings Parents: your child's attendance and school notices from The Little Wings Play School, Vuyyuru">
+<meta name="description" content="Little Wings Parents: your child's attendance, fee receipts and school notices from The Little Wings Play School, Vuyyuru">
 <title>Little Wings Parents</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
-<link rel="stylesheet" href="style.css?v=1.0.0">
+<link rel="stylesheet" href="style.css?v=1.1.0">
+<link rel="stylesheet" href="../assets/receipt.css?v=2.3.0">
 </head>
 <body>
 <noscript><div class="noscript">This app needs JavaScript turned on in your browser.</div></noscript>
@@ -22,9 +23,11 @@
 <div id="app" aria-live="polite"></div>
 <div id="sheet-root"></div>
 <div id="toast-root" aria-live="polite"></div>
+<div id="print-root" aria-hidden="true"></div>
 <button type="button" id="sw-update" hidden>New version available — tap to refresh</button>
-<script src="../config.js?v=2.2.0"></script>
+<script src="../config.js?v=2.3.0"></script>
 <script src="../assets/vendor/supabase-js-2.119.0.js"></script>
-<script src="app.js?v=1.0.0"></script>
+<script src="../assets/receipt.js?v=2.3.0"></script>
+<script src="app.js?v=1.1.0"></script>
 </body>
 </html>

@@ -336,33 +336,17 @@ details summary { cursor: pointer; font-weight: 700; }
 .toast.err { background: var(--coral-d); }
 .toast.out { opacity: 0; }
 
-/* Receipt */
-#print-root { display: none; }
-.receipt-preview { background: #f3f5f8; border-radius: var(--r); padding: .8rem; }
-.receipt { background: #fff; border-radius: 14px; padding: 1.1rem; border: 2px solid var(--line); color: #1e2b38; max-width: 640px; margin: 0 auto; }
-.r-head { display: flex; gap: .8rem; align-items: center; border-bottom: 3px solid var(--sky); padding-bottom: .7rem; }
-.r-head img { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; flex: none; }
-.r-head h2 { margin: 0 0 .15rem; color: var(--sky-d); font-size: 1.2rem; }
-.r-head p { margin: 0; font-size: .8rem; color: #4a5a6b; }
-.r-title { text-align: center; font-weight: 800; letter-spacing: .25em; margin: .8rem 0 .4rem; color: var(--coral-d); }
-.r-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .3rem; font-size: .9rem; margin-bottom: .6rem; }
-.r-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
-.r-table th, .r-table td { text-align: left; padding: .42rem .4rem; border-bottom: 1px dashed #dfe5ec; vertical-align: top; }
-.r-table th { width: 40%; color: #5a6b7c; font-weight: 600; }
-.r-amt { font-size: 1.2rem; }
-.r-foot { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 1.6rem; font-size: .9rem; }
-.r-foot .sign { border-top: 1px solid #9aa7b4; padding-top: .2rem; min-width: 150px; text-align: center; color: #5a6b7c; }
-.r-small { font-size: .72rem; color: #8b97a3; text-align: center; margin: .8rem 0 0; }
-.r-cut { text-align: center; color: #9aa7b4; font-size: .7rem; margin: 6mm 0; white-space: nowrap; overflow: hidden; }
-
-@page { size: A4 portrait; margin: 0; }
-@media print {
-  body { background: #fff !important; }
-  body > * { display: none !important; }
-  body > #print-root { display: block !important; padding: 12mm 14mm; }
-  #print-root .receipt { border: 1.5px solid #cfd8e3; max-width: none; border-radius: 8px; break-inside: avoid; }
-  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-}
+/* Receipt (layout lives in assets/receipt.css, shared with the Parents app) */
+.receipt-preview { background: #f3f5f8; border-radius: var(--r); padding: .6rem; overflow-x: hidden; }
+.receipt-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; margin-top: .9rem; }
+.receipt-actions .btn { flex: 1 1 auto; }
+@media (min-width: 560px) { .receipt-actions .btn { flex: 0 0 auto; } }
+.dup-warn { border-left: 5px solid var(--coral); }
+.dup-warn ul { margin: .4rem 0 0; padding-left: 1.1rem; }
+.dup-warn li { margin: .3rem 0; }
+.rcpt-total { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; margin: .2rem 0 .8rem; }
+.switch-row { display: flex; align-items: flex-start; gap: .7rem; cursor: pointer; }
+.switch-row input { width: 22px; height: 22px; min-height: 0; flex: none; margin-top: .15rem; accent-color: var(--green); }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
 /* ---------- v2: cloud sync badge, password fields, loading ---------- */

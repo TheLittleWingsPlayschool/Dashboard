@@ -19,6 +19,8 @@
 -- v2.2: run supabase/parents.sql after this file (parent role, parent_students,
 -- notices, parent-only RPCs). It also replaces app.handle_new_user and the
 -- settings_select policy defined below.
+-- v2.3: then run supabase/receipts.sql (parent_fees / parent_payments RPCs for
+-- the Parents app Fees tab, gated by settings.data.showFeesToParents).
 -- =====================================================================
 
 create schema if not exists app;

@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.2, cloud) + Parents app
+# The Little Wings Play School — Admin & Classes Dashboard (v2.3, cloud) + Parents app (v1.1)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -12,7 +12,7 @@ admin and teachers see the same data on every phone, each with their own login.
 - **Dashboard**: students per class (Toddlers, Nursery, LKG, UKG), today's attendance %, fees collected, pending fees, enquiries, charts, follow-ups due, birthdays.
 - **Classes**: students per class with search; add/edit/delete students (DOB with auto age, parent, tap-to-call and WhatsApp, fee, emergency contact, medical notes, authorised pickup).
 - **Attendance**: Present/Absent/Leave/Half-day, mark-all-present, monthly register, absent list with a WhatsApp message to the parent.
-- **Fees**: record payments (Cash/UPI/Bank) with auto-numbered, printable receipts and WhatsApp sharing; monthly pending list.
+- **Fees**: record payments (Cash/UPI/Bank) for one month or several months at once (term / advance), monthly pending list, and **professional fee receipts** (new in v2.3, see below).
 - **Enquiries**: leads and follow-ups; convert an enquiry into a student.
 - **Staff**: role, phone, class and monthly salary (admin only).
 - **Notices** (new in v2.2): admin posts to the whole school or one class; teachers post to their own class. Pin, optional "show until" date, delete. Parents see them in the Parents app.
@@ -27,7 +27,8 @@ Access is enforced **in the database** with Row Level Security (RLS), not only h
 | Students | all classes: read, add, edit, delete | **own class only**: read, add, edit (no delete) | **only their own child(ren)**: name and class, nothing else |
 | Attendance | all classes | **own class only** | **only their own child's** status per day (never the rest of the class) |
 | Notices | all: post, pin, delete | read school-wide + own class; post/pin/delete **own** notices for own class | read school-wide + their children's classes (not expired) |
-| Monthly fees, payments/receipts, enquiries, staff & salaries | full access | **no access at all** (the database returns nothing) | **no access at all** |
+| Monthly fees, payments/receipts | full access | **no access at all** (the database returns nothing) | **only their own child's** fee summary and receipts, and only when the admin turns on *Show fees to parents* (v2.3); no internal notes |
+| Enquiries, staff & salaries | full access | **no access at all** | **no access at all** |
 | School settings | read and edit | read only (school name) | no access |
 | Logins | create / edit / reset password / remove teachers and parents | change own password | change own password |
 
@@ -79,6 +80,40 @@ stored as the address `<mobile>@parents.littlewings.app`; no email is ever sent 
 directly — they get their child's data only through two database functions (`parent_children`, `parent_attendance`) that
 check the link between the parent and the child (`parent_students`). SQL: `supabase/parents.sql`.
 
+## Fee receipts (new in v2.3)
+Every payment gets a printable receipt (Fees → 🧾, or a student → **All receipts**). It shows the logo, school name, address,
+phone/WhatsApp and email (from **Settings → School details**), receipt number, date, student, class, parent, the month(s) paid for,
+monthly fee, amount paid, payment mode and UPI/bank reference, the **amount in words** (e.g. *Rupees One Thousand Five Hundred Only*,
+Indian lakh/crore style), the **balance due after this payment**, **Received by** (the admin's name) with a signature line, and
+*This is a computer-generated receipt*. Internal payment notes are never printed.
+
+Buttons on the receipt:
+- **Share on WhatsApp**: opens WhatsApp with a short receipt summary, addressed to the parent's WhatsApp/phone number when it is saved on the student.
+- **Save image**: makes a PNG of the receipt (drawn on the phone, nothing is uploaded). On phones that support it the share sheet opens, so you can send the image straight to the parent on WhatsApp; otherwise it downloads.
+- **Save as PDF**: opens the print window with one receipt on an A4 page. Choose **Save as PDF** as the printer (iPhone: Share → Save to Files). The file is named after the receipt.
+- **Print (2 copies)**: one A4 page with a *Parent copy* and an *Office copy* and a cut line.
+
+**Months covered**: when recording a payment you can choose 1–12 months (for example a 3-month term). The amount is split over those
+months (each month's due first, any extra on the last month), so dues and the Parents app stay correct. Old payments keep working.
+
+**Receipt numbers**: `<prefix>-0001, -0002…` (prefix in Settings). A new number is never one that already exists. *Known limitation:* if
+two phones record payments while **both** are offline, both can pick the same number. After they sync, the Fees page shows a warning
+**Same receipt number used twice** with a **Give new number** button for the newer payment (the older one keeps its number).
+
+### Fees in the Parents app (admin switch)
+Parents get a **💰 Fees** tab showing, for each of their own children: monthly fee, pending fees (calculated exactly like the dashboard,
+from the later of the admission month and *Track pending fees from*), this month's status, months paid, total paid, and the list of
+payments with date, amount, month(s), mode and receipt number. **View / Print receipt** opens the same receipt design (Print / Save as PDF,
+Save image, Share on WhatsApp).
+
+It is **off** until you switch it on: **Settings → 💰 Fees in the Parents app → Show fees to parents**. While it is off, parents see
+*"Fee details are not shown yet"*, and any fee details saved on their phone are removed at the next refresh. The switch is checked
+inside the database, so it cannot be bypassed from a browser.
+
+How it works: parents still cannot read the `payments` or `student_fees` tables (RLS unchanged). They get data only through two database
+functions, `parent_fees(student)` and `parent_payments(student)`, which return rows only for a child linked to that parent login, only parent-safe
+fields (no notes, no staff data, no other child), and nothing unless `settings.data.showFeesToParents` is `true`. SQL: `supabase/receipts.sql`.
+
 ## Optional Supabase settings (dashboard.supabase.com → project *little-wings-dashboard*)
 Nothing is required for normal use. Only the **"Forgot password?" email link** needs this:
 - **Authentication → URL Configuration**: set **Site URL** to `https://thelittlewingsplayschool.github.io/Dashboard/`
@@ -113,12 +148,16 @@ After the first visit, the app shell (the pages, styles, icons and the sign-in s
 - `assets/vendor/supabase-js-2.119.0.js` — the official Supabase JavaScript client (bundled, no CDN needed).
 - `supabase/schema.sql` — tables, RLS policies and triggers (documentation copy of what runs in the database).
 - `supabase/parents.sql` — v2.2 additions: parent role, `parent_students`, `notices`, parent-only RPCs and their RLS (run after `schema.sql`).
+- `supabase/receipts.sql` — v2.3: `parent_fees` / `parent_payments` RPCs for the Parents app Fees tab (run after `parents.sql`).
+- `assets/receipt.js`, `assets/receipt.css` — the shared fee receipt (HTML, print to one A4 page, PNG image, WhatsApp text, amount in words), used by both apps. No external libraries.
 - `supabase/functions/lw-admin/index.ts` — server function for creating the first admin and managing teacher and parent logins.
 - `parents/` — the Parents app (`index.html`, `app.js`, `style.css`, `manifest.webmanifest`, `sw.js`, `icons/`). It reuses `config.js`, the bundled Supabase client and the logo from the dashboard folder.
 
 ## Limitations
 - **Last write wins**: if two people edit the same record at the same moment, the later save wins. Attendance is stored per class per day, so different classes never clash.
-- Receipt numbers are checked against existing receipts, but two devices recording payments while both offline could still pick the same number.
+- Receipt numbers are checked against existing receipts, but two devices recording payments while both offline could still pick the same number; the Fees page then shows a warning with a one-tap fix (see *Fee receipts*).
+- *Save as PDF* uses the phone's print window (no PDF library is bundled). The receipt image is a PNG; there is no automatic attachment to WhatsApp messages — WhatsApp links carry the text summary, and the image can be shared from the share sheet.
+- Discounts/concessions are not a separate field yet: record the amount actually paid (and lower the student's monthly fee if the concession is permanent).
 - The offline copy uses the phone's browser storage (about 5 MB), enough for several years of a small school. Signing out removes it from that phone, along with any changes not yet uploaded (the app warns first). The installed app’s shell (pages and icons) stays on the phone so you can still reach the sign-in screen.
 - Supabase's free plan pauses a project after about a week with no activity. Normal daily use keeps it awake. If it pauses, open the project in the Supabase dashboard and click **Restore**.
 - Password-reset emails need the URL setting above and are limited by Supabase's free email sender.

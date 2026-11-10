@@ -1,0 +1,75 @@
+/* The Little Wings — shared fee receipt styles (v2.3): screen + print. */
+.lwr { position: relative; overflow: hidden; background: #fff; color: #1e2b38; border: 1.5px solid #d5dde6; border-radius: 14px; padding: 0 1.1rem 1rem; max-width: 680px; margin: 0 auto;
+  font-family: "Segoe UI", Roboto, "Noto Sans", Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.35; text-align: left; }
+.lwr * { box-sizing: border-box; }
+.lwr-band { height: 7px; margin: 0 -1.1rem .8rem; background: linear-gradient(90deg, #38a8e0 0 33.3%, #ff7a6b 33.3% 66.6%, #ffc93c 66.6%); }
+.lwr-head { display: flex; gap: .75rem; align-items: flex-start; }
+.lwr-logo { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; flex: none; border: 2px solid #ffc93c; }
+.lwr-school { flex: 1 1 auto; min-width: 0; }
+.lwr-school h2 { margin: 0 0 .15rem; font-size: 1.2rem; line-height: 1.2; color: #1b6e99; letter-spacing: .01em; }
+.lwr-school p { margin: 0; font-size: .78rem; color: #4a5a6b; overflow-wrap: anywhere; }
+.lwr-tag { flex: none; text-align: center; }
+.lwr-tag b { display: block; background: #ff7a6b; color: #fff; border-radius: 999px; padding: .3rem .75rem; font-size: .78rem; letter-spacing: .12em; white-space: nowrap; }
+.lwr-tag span { display: block; margin-top: .25rem; font-size: .7rem; color: #5a6b7c; }
+.lwr-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; border-top: 3px solid #38a8e0; margin-top: .7rem; padding-top: .55rem; }
+.lwr-meta small, .lwr-amount small, .lwr-recv small { display: block; font-size: .66rem; letter-spacing: .06em; text-transform: uppercase; color: #6b7b8c; }
+.lwr-meta b { font-size: .98rem; overflow-wrap: anywhere; }
+.lwr-tbl { width: 100%; border-collapse: collapse; margin: .55rem 0 .3rem; font-size: .9rem; }
+.lwr-tbl th, .lwr-tbl td { text-align: left; padding: .34rem .2rem; border-bottom: 1px dashed #dfe5ec; vertical-align: top; }
+.lwr-tbl th { width: 38%; color: #5a6b7c; font-weight: 600; }
+.lwr-tbl td { overflow-wrap: anywhere; }
+.lwr-amount { display: flex; gap: .9rem; align-items: stretch; background: #eaf6ec; border-radius: 12px; padding: .6rem .8rem; margin: .55rem 0 .4rem; }
+.lwr-amt { flex: none; }
+.lwr-amt b { font-size: 1.55rem; color: #1e7a3c; white-space: nowrap; }
+.lwr-amt small { color: #1e7a3c; }
+.lwr-words { flex: 1 1 auto; min-width: 0; border-left: 1px solid #c7e6cf; padding-left: .8rem; }
+.lwr-words b { font-size: .92rem; overflow-wrap: anywhere; }
+.lwr-bal { margin: .35rem 0 0; font-size: .9rem; }
+.lwr-sign { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-top: 1.1rem; }
+.lwr-recv b { display: block; min-height: 1.2em; font-size: .95rem; }
+.lwr-sigline { min-width: 46%; border-top: 1.5px solid #8a98a6; padding-top: .2rem; text-align: center; font-size: .75rem; color: #5a6b7c; }
+.lwr-foot { margin-top: .8rem; text-align: center; font-size: .7rem; color: #8b97a3; }
+.lwr-wm { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 6.5rem; font-weight: 900; color: rgba(255, 122, 107, .14); transform: rotate(-22deg); pointer-events: none; letter-spacing: .08em; }
+.lwr-cut { text-align: center; color: #9aa7b4; font-size: .72rem; margin: 5mm 0; white-space: nowrap; overflow: hidden; }
+@media (max-width: 420px) {
+  .lwr { padding: 0 .75rem .8rem; font-size: 13px; }
+  .lwr-band { margin: 0 -.75rem .7rem; }
+  .lwr-head { flex-wrap: wrap; }
+  .lwr-logo { width: 52px; height: 52px; }
+  .lwr-school { flex-basis: calc(100% - 64px); }
+  .lwr-tag { flex-basis: 100%; display: flex; gap: .5rem; align-items: center; }
+  .lwr-tag span { margin: 0; }
+  .lwr-meta { grid-template-columns: 1fr 1fr; }
+  .lwr-amount { flex-direction: column; gap: .4rem; }
+  .lwr-words { border-left: 0; padding-left: 0; border-top: 1px solid #c7e6cf; padding-top: .4rem; }
+  .lwr-tbl th { width: 42%; }
+  .lwr-wm { font-size: 3.6rem; }
+}
+
+/* ---------- print: only #print-root, one A4 page ---------- */
+#print-root { display: none; }
+@page { size: A4 portrait; margin: 0; }
+@media print {
+  html, body { background: #fff !important; margin: 0 !important; padding: 0 !important; min-height: 0 !important; height: auto !important; }
+  body > *:not(#print-root) { display: none !important; }
+  body > #print-root { display: block !important; padding: 10mm 14mm 0; }
+  #print-root .lwr { max-width: none; border-radius: 6px; break-inside: avoid; page-break-inside: avoid; font-size: 10.5pt; padding: 0 6mm 4mm; }
+  #print-root .lwr-band { margin: 0 -6mm 3mm; }
+  #print-root.two { padding-top: 7mm; }
+  #print-root.two .lwr { font-size: 8.6pt; padding-bottom: 2.5mm; }
+  #print-root.two .lwr-band { margin-bottom: 2mm; }
+  #print-root.two .lwr-logo { width: 50px; height: 50px; }
+  #print-root.two .lwr-meta { margin-top: 2mm; padding-top: 1.5mm; }
+  #print-root.two .lwr-tbl { margin: 1.5mm 0 1mm; }
+  #print-root.two .lwr-tbl th, #print-root.two .lwr-tbl td { padding: 1mm .2rem; }
+  #print-root.two .lwr-amount { margin: 1.5mm 0 1mm; padding: 1.8mm 3mm; }
+  #print-root.two .lwr-sign { margin-top: 5mm; }
+  #print-root.two .lwr-foot { margin-top: 2mm; }
+  #print-root.two .lwr-cut { margin: 3mm 0; }
+  #print-root .lwr-head { flex-wrap: nowrap; }
+  #print-root .lwr-tag { flex-basis: auto; display: block; }
+  #print-root .lwr-meta { grid-template-columns: repeat(3, 1fr); }
+  #print-root .lwr-amount { flex-direction: row; }
+  #print-root .lwr-words { border-left: 1px solid #c7e6cf; padding-left: .8rem; border-top: 0; padding-top: 0; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.2.0';
+  var APP_VERSION = '2.3.0';
   var PARENT_DOMAIN = 'parents.littlewings.app';
   var PARENTS_APP_URL = 'https://thelittlewingsplayschool.github.io/Dashboard/parents/';
   var TZ = 'Asia/Kolkata';
@@ -497,6 +497,7 @@
   var WA_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2c-1.5 0-3-.4-4.3-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1-.7-.3-1.4-.7-2-1.3-.6-.5-1-1.1-1.4-1.8-.1-.2 0-.4.1-.5l.4-.5.3-.4v-.5l-.8-1.9c-.2-.5-.4-.4-.6-.4h-.5c-.2 0-.5.1-.7.3-.6.6-.9 1.4-.9 2.2.1 1 .5 1.9 1.1 2.7 1.1 1.6 2.5 2.9 4.2 3.7.5.2 1 .4 1.4.5.6.2 1.1.2 1.7.1.6-.1 1.6-.7 1.8-1.3.2-.6.2-1.1.2-1.2-.1-.1-.3-.2-.5-.3z"/></svg>';
 
   function inWords(amount) {
+    if (window.LWReceipt) return window.LWReceipt.inWords(amount);
     var n = Math.round(Number(amount) || 0);
     if (n === 0) return 'Zero';
     var a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
@@ -544,8 +545,19 @@
     if (c.marked) c.pct = Math.round((c.P + 0.5 * c.H) / c.marked * 100);
     return c;
   }
+  // v2.3: a payment can cover several months. p.months lists them and p.alloc
+  // says how much of the amount went to each month; old payments have only p.month.
+  function payMonths(p) { var l = asArray(p.months).filter(isMonth); return l.length ? l : (isMonth(p.month) ? [p.month] : []); }
+  function payAlloc(p) {
+    var a = asObject(p.alloc), keys = Object.keys(a).filter(isMonth);
+    if (keys.length) { var o = {}; keys.forEach(function (k) { o[k] = num(a[k]); }); return o; }
+    var r = {}; if (isMonth(p.month)) r[p.month] = num(p.amount); return r;
+  }
+  function payTowards(p, ym) { return payAlloc(p)[ym] || 0; }
+  function coversMonth(p, ym) { return payMonths(p).indexOf(ym) >= 0 || payAlloc(p)[ym] != null; }
+  function periodText(p) { return window.LWReceipt ? window.LWReceipt.period(payMonths(p)) : fmtMonth(p.month); }
   function paidFor(studentId, ym) {
-    return S.payments.reduce(function (a, p) { return a + (p.studentId === studentId && p.month === ym ? num(p.amount) : 0); }, 0);
+    return S.payments.reduce(function (a, p) { return a + (p.studentId === studentId ? payTowards(p, ym) : 0); }, 0);
   }
   function admMonth(s) { return isISODate(s.admissionDate) ? s.admissionDate.slice(0, 7) : thisMonth(); }
   function feeApplies(s, ym) { return s.status !== 'Left' && ym >= admMonth(s) && num(s.monthlyFee) > 0; }
@@ -560,7 +572,7 @@
   }
 
   // expose for tests
-  window.__lw = { inWords: inWords, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION };
+  window.__lw = { inWords: inWords, outstanding: function (id) { var s = studentById(id); return s ? outstanding(s) : null; }, paidFor: paidFor, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION };
 
   /* =====================================================================
    * UI PRIMITIVES
@@ -1096,7 +1108,7 @@
     }).join('') + '</ul>' : '<p class="muted">No birthdays this month.</p>') + '</section>';
     var recent = S.payments.slice().sort(function (a, b) { return (b.createdAt || '') < (a.createdAt || '') ? -1 : 1; }).slice(0, 5);
     html += '<section class="card"><h3>🧾 Recent payments</h3>' + (recent.length ? '<ul class="mini-list">' + recent.map(function (p) {
-      return '<li><span><b>' + esc(p.studentName) + '</b> · ' + esc(fmtMonth(p.month)) + '<small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><b>' + inr(p.amount) + '</b></li>';
+      return '<li><span><b>' + esc(p.studentName) + '</b> · ' + esc(periodText(p)) + '<small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><b>' + inr(p.amount) + '</b></li>';
     }).join('') + '</ul>' : '<p class="muted">No payments recorded yet.</p>') + '</section>';
     html += '<section class="card"><h3>⏳ Top pending fees</h3>' + (outstandingList.length ? '<ul class="mini-list">' + outstandingList.sort(function (a, b) { return b.due - a.due; }).slice(0, 6).map(function (x) {
       return '<li><span><b>' + esc(x.s.name) + '</b> · ' + esc(className(x.s.classId)) + '<small>' + esc(x.s.parentName || '') + '</small></span><b class="coral-t">' + inr(x.due) + '</b></li>';
@@ -1270,8 +1282,8 @@
       '<h4>Attendance in ' + esc(fmtMonth(ym)) + '</h4><div class="att-sum">' + ATT_KEYS.map(function (k) { return '<span class="att-chip ' + ATT[k].cls + '">' + ATT[k].label + ' <b>' + c[k] + '</b></span>'; }).join('') + '</div>';
     if (isAdmin()) {
       var pays = S.payments.filter(function (p) { return p.studentId === s.id; }).sort(function (a, b) { return a.month < b.month ? 1 : -1; });
-      body += '<h4>Fees</h4><p>Pending (all months): <b class="coral-t">' + inr(outstanding(s)) + '</b></p>' +
-        (pays.length ? '<ul class="mini-list">' + pays.slice(0, 12).map(function (p) { return '<li><span><b>' + esc(fmtMonth(p.month)) + '</b><small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><span><b>' + inr(p.amount) + '</b> <button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="Receipt">🧾</button></span></li>'; }).join('') + '</ul>' : '<p class="muted">No payments yet.</p>');
+      body += '<div class="row between"><h4>Fees</h4>' + (pays.length ? '<button class="btn small ghost" data-act="student-receipts" data-id="' + esc(s.id) + '">🧾 All receipts (' + pays.length + ')</button>' : '') + '</div><p>Pending (all months): <b class="coral-t">' + inr(outstanding(s)) + '</b></p>' +
+        (pays.length ? '<ul class="mini-list">' + pays.slice(0, 6).map(function (p) { return '<li><span><b>' + esc(periodText(p)) + '</b><small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><span><b>' + inr(p.amount) + '</b> <button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="Receipt">🧾</button></span></li>'; }).join('') + '</ul>' : '<p class="muted">No payments yet.</p>');
     }
     if (isAdmin()) body += '<div id="student-parent-box">' + studentParentHTML(s) + '</div>';
     body += '<div class="form-actions">' + (isAdmin() ? '<button class="btn ghost" data-act="pay-add" data-student="' + esc(s.id) + '">💰 Record payment</button>' : '') + '<button class="btn primary" data-act="student-edit" data-id="' + esc(s.id) + '">✏️ Edit</button></div>';
@@ -1408,8 +1420,8 @@
     var studs = activeStudents();
     var billable = studs.filter(function (s) { return feeApplies(s, ym); });
     var expected = billable.reduce(function (a, s) { return a + num(s.monthlyFee); }, 0);
-    var paysM = S.payments.filter(function (p) { return p.month === ym; });
-    var received = paysM.reduce(function (a, p) { return a + num(p.amount); }, 0);
+    var paysM = S.payments.filter(function (p) { return coversMonth(p, ym); });
+    var received = paysM.reduce(function (a, p) { return a + payTowards(p, ym); }, 0);
     var pendingList = billable.map(function (s) { return { s: s, paid: paidFor(s.id, ym), due: dueFor(s, ym) }; }).filter(function (x) { return x.due > 0; });
     var pending = pendingList.reduce(function (a, x) { return a + x.due; }, 0);
     var html = '<div class="toolbar">' + field('Fee month', '<input type="month" value="' + ym + '" data-change="fee-month">') +
@@ -1417,14 +1429,15 @@
     html += '<div class="stats">' + stat('📋', 'Expected for ' + fmtMonth(ym), inr(expected), billable.length + ' students with a monthly fee', 'sky') +
       stat('💰', 'Received towards ' + fmtMonth(ym), inr(received), paysM.length + ' receipt' + (paysM.length === 1 ? '' : 's'), 'green') +
       stat('⏳', 'Pending for ' + fmtMonth(ym), inr(pending), pendingList.length + ' student' + (pendingList.length === 1 ? '' : 's'), 'coral') + '</div>';
+    html += dupReceiptsHTML();
     var noFee = studs.filter(function (s) { return !num(s.monthlyFee); }).length;
     if (noFee) html += '<p class="note">ℹ️ ' + noFee + ' active student' + (noFee === 1 ? ' has' : 's have') + ' no monthly fee set, so they are not counted. Set it in the student’s profile.</p>';
     html += '<div class="seg-tabs"><button type="button" class="' + (UI.feeTab === 'pending' ? 'active' : '') + '" data-act="fee-tab" data-tab="pending">⏳ Pending (' + pendingList.length + ')</button><button type="button" class="' + (UI.feeTab === 'payments' ? 'active' : '') + '" data-act="fee-tab" data-tab="payments">🧾 Payments (' + paysM.length + ')</button></div>';
     if (UI.feeTab === 'payments') {
       if (!paysM.length) return html + emptyState('🧾', 'No payments for ' + fmtMonth(ym), 'Recorded payments for this fee month will appear here.', '<button class="btn primary" data-act="pay-add">➕ Record payment</button>');
-      return html + '<div class="table-wrap"><table class="table responsive"><thead><tr><th>Receipt</th><th>Paid on</th><th>Student</th><th>Mode</th><th class="num">Amount</th><th class="act-col"><span class="sr">Actions</span></th></tr></thead><tbody>' +
+      return html + '<div class="table-wrap"><table class="table responsive"><thead><tr><th>Receipt</th><th>Paid on</th><th>Student</th><th>Fee for</th><th>Mode</th><th class="num">Amount</th><th class="act-col"><span class="sr">Actions</span></th></tr></thead><tbody>' +
         paysM.sort(function (a, b) { return (a.seq || 0) < (b.seq || 0) ? 1 : -1; }).map(function (p) {
-          return '<tr><td data-label="Receipt"><b>' + esc(p.receiptNo) + '</b></td><td data-label="Paid on">' + fmtDate(p.paidOn) + '</td><td data-label="Student">' + esc(p.studentName) + ' <small class="muted">' + esc(className(p.classId)) + '</small></td><td data-label="Mode">' + esc(p.mode) + '</td><td data-label="Amount" class="num"><b>' + inr(p.amount) + '</b></td>' +
+          return '<tr><td data-label="Receipt"><b>' + esc(p.receiptNo) + '</b></td><td data-label="Paid on">' + fmtDate(p.paidOn) + '</td><td data-label="Student"><button type="button" class="link" data-act="student-receipts" data-id="' + esc(p.studentId) + '" title="All receipts of this student">' + esc(p.studentName) + '</button> <small class="muted">' + esc(className(p.classId)) + '</small></td><td data-label="Fee for">' + esc(periodText(p)) + '</td><td data-label="Mode">' + esc(p.mode) + '</td><td data-label="Amount" class="num"><b>' + inr(p.amount) + '</b></td>' +
             '<td class="actions"><button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="View / print receipt" aria-label="Receipt">🧾</button><button class="icon-btn" data-act="pay-del" data-id="' + esc(p.id) + '" title="Delete payment" aria-label="Delete payment">🗑️</button></td></tr>';
         }).join('') + '</tbody></table></div>';
     }
@@ -1441,8 +1454,40 @@
     // Never reuse a number, even if two devices recorded payments while offline.
     var maxUsed = S.payments.reduce(function (m, p) { return Math.max(m, parseInt(p.seq, 10) || 0); }, 0);
     var seq = Math.max(1, parseInt(S.settings.receiptSeq, 10) || 1, maxUsed + 1);
-    return { seq: seq, no: (S.settings.receiptPrefix || 'LW').trim() + '-' + String(seq).padStart(4, '0') };
+    var used = {}; S.payments.forEach(function (p) { if (p.receiptNo) used[String(p.receiptNo).toUpperCase()] = 1; });
+    var pre = (S.settings.receiptPrefix || 'LW').trim(), no = pre + '-' + String(seq).padStart(4, '0'), guard = 0;
+    while (used[no.toUpperCase()] && guard++ < 10000) { seq++; no = pre + '-' + String(seq).padStart(4, '0'); }
+    return { seq: seq, no: no };
   }
+  // Two phones recording payments while BOTH offline can pick the same number.
+  // After syncing, such duplicates are listed on the Fees page with a one-tap fix
+  // that gives the newer payment the next free number (the older keeps its number).
+  function duplicateReceipts() {
+    var by = {};
+    S.payments.forEach(function (p) { var k = String(p.receiptNo || '').toUpperCase(); if (k) (by[k] = by[k] || []).push(p); });
+    return Object.keys(by).filter(function (k) { return by[k].length > 1; }).map(function (k) {
+      return by[k].slice().sort(function (a, b) { return String(a.createdAt || '') < String(b.createdAt || '') ? -1 : 1; });
+    });
+  }
+  function dupReceiptsHTML() {
+    var d = duplicateReceipts();
+    if (!d.length) return '';
+    return '<div class="callout warn dup-warn"><b>⚠️ Same receipt number used twice</b><p>This happens when two phones record payments while both are offline. Keep the first one and give the newer payment a new number:</p><ul>' +
+      d.map(function (g) { return g.slice(1).map(function (p) { return '<li><b>' + esc(p.receiptNo) + '</b> · ' + esc(p.studentName) + ' · ' + inr(p.amount) + ' · ' + fmtDate(p.paidOn) + ' <button class="btn small primary" data-act="receipt-renum" data-id="' + esc(p.id) + '">Give new number</button></li>'; }).join(''); }).join('') + '</ul></div>';
+  }
+  function allocate(s, months, amount) {
+    // Fill each month's due in order; anything left over goes to the last month.
+    var left = amount, alloc = {}, fee = num(s.monthlyFee);
+    months.forEach(function (m, i) {
+      var due = fee > 0 ? Math.max(0, fee - paidFor(s.id, m)) : 0;
+      var put = i === months.length - 1 ? left : Math.min(left, due);
+      put = Math.round(put * 100) / 100;
+      if (put > 0) alloc[m] = put;
+      left = Math.round((left - put) * 100) / 100;
+    });
+    return alloc;
+  }
+  function monthsFrom(ym, n) { var out = []; for (var i = 0; i < n; i++) out.push(addMonths(ym, i)); return out; }
   function openPaymentForm(studentId, month) {
     var studs = activeStudents();
     if (!studs.length) { toast('Add a student first', 'err'); return; }
@@ -1454,6 +1499,7 @@
     var body = '<form class="form" novalidate><div class="grid2">' +
       field('Student *', '<select name="studentId" required><option value="">Select student</option>' + groups + '</select>', '', 'span2') +
       field('Fee for month *', '<input type="month" name="month" value="' + esc(month || UI.feeMonth || thisMonth()) + '" required>') +
+      field('Months covered', '<select name="count">' + options([1, 2, 3, 4, 5, 6, 9, 12].map(function (n) { return { value: String(n), label: n === 1 ? '1 month' : n + ' months' }; }), '1') + '</select>', '<small class="hint">For a term / advance payment</small>') +
       field('Amount (₹) *', '<input type="number" name="amount" min="1" max="1000000" step="1" inputmode="numeric" required>') +
       field('Payment mode *', '<select name="mode">' + options(PAY_MODES, 'Cash') + '</select>') +
       field('Paid on *', '<input type="date" name="paidOn" max="' + todayISO() + '" value="' + todayISO() + '" required>') +
@@ -1464,17 +1510,18 @@
     openModal({
       title: 'Record fee payment', size: 'wide', body: body,
       mount: function (root) {
-        var sel = $('[name=studentId]', root), mon = $('[name=month]', root), amt = $('[name=amount]', root), hint = $('#due-hint', root), amtTouched = false;
+        var sel = $('[name=studentId]', root), mon = $('[name=month]', root), cnt = $('[name=count]', root), amt = $('[name=amount]', root), hint = $('#due-hint', root), amtTouched = false;
         amt.addEventListener('input', function () { amtTouched = true; });
         function upd() {
           var s = studentById(sel.value);
           if (!s || !isMonth(mon.value)) { hint.hidden = true; return; }
-          var fee = num(s.monthlyFee), paid = paidFor(s.id, mon.value), due = Math.max(0, fee - paid);
+          var ms = monthsFrom(mon.value, parseInt(cnt.value, 10) || 1);
+          var fee = num(s.monthlyFee), paid = ms.reduce(function (a, m) { return a + paidFor(s.id, m); }, 0), due = ms.reduce(function (a, m) { return a + Math.max(0, fee - paidFor(s.id, m)); }, 0);
           hint.hidden = false;
-          hint.innerHTML = '<b>' + esc(s.name) + '</b> · ' + esc(fmtMonth(mon.value)) + ': fee ' + inr(fee) + ' · paid ' + inr(paid) + ' · <b>due ' + inr(due) + '</b>' + (mon.value < admMonth(s) ? '<br><small class="warn-t">This month is before the admission date (' + fmtDate(s.admissionDate) + ').</small>' : '');
+          hint.innerHTML = '<b>' + esc(s.name) + '</b> · ' + esc(window.LWReceipt ? window.LWReceipt.period(ms) : fmtMonth(mon.value)) + ': fee ' + inr(fee * ms.length) + ' · paid ' + inr(paid) + ' · <b>due ' + inr(due) + '</b>' + (mon.value < admMonth(s) ? '<br><small class="warn-t">This month is before the admission date (' + fmtDate(s.admissionDate) + ').</small>' : '');
           if (!amtTouched) amt.value = due > 0 ? due : '';
         }
-        sel.addEventListener('change', upd); mon.addEventListener('change', upd); upd();
+        sel.addEventListener('change', upd); mon.addEventListener('change', upd); cnt.addEventListener('change', upd); upd();
       },
       onSubmit: function (form, fd) {
         var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
@@ -1485,13 +1532,18 @@
         if (PAY_MODES.indexOf(g('mode')) < 0) { fieldError(form, 'mode', 'Choose a payment mode'); ok = false; }
         if (!isISODate(g('paidOn')) || g('paidOn') > todayISO()) { fieldError(form, 'paidOn', 'Choose a valid date (not in the future)'); ok = false; }
         if (!ok) return false;
-        var due = Math.max(0, num(s.monthlyFee) - paidFor(s.id, g('month')));
-        return (num(s.monthlyFee) && amount > due ? confirmBox('This is more than the amount due for ' + fmtMonth(g('month')) + ' (' + inr(due) + '). Save anyway?', { ok: 'Save', danger: false, title: 'Amount more than due' }) : Promise.resolve(true)).then(function (go) {
+        var n = parseInt(g('count'), 10); if (!(n >= 1 && n <= 12)) n = 1;
+        var ms = monthsFrom(g('month'), n);
+        var due = ms.reduce(function (a, m) { return a + Math.max(0, num(s.monthlyFee) - paidFor(s.id, m)); }, 0);
+        return (num(s.monthlyFee) && amount > due ? confirmBox('This is more than the amount due for ' + periodText({ months: ms }) + ' (' + inr(due) + '). Save anyway?', { ok: 'Save', danger: false, title: 'Amount more than due' }) : Promise.resolve(true)).then(function (go) {
           if (!go) return false;
           var r = nextReceiptNo();
-          var p = { id: uid(), seq: r.seq, receiptNo: r.no, studentId: s.id, studentName: s.name, parentName: s.parentName || '', classId: s.classId, month: g('month'),
-            amount: Math.round(amount * 100) / 100, mode: g('mode'), ref: g('ref'), paidOn: g('paidOn'), note: g('note'), createdAt: new Date().toISOString() };
+          var amt2 = Math.round(amount * 100) / 100;
+          var p = { id: uid(), seq: r.seq, receiptNo: r.no, studentId: s.id, studentName: s.name, parentName: s.parentName || '', classId: s.classId, month: ms[0],
+            amount: amt2, mode: g('mode'), ref: g('ref'), paidOn: g('paidOn'), note: g('note'), receivedBy: (ME && ME.name) || S.settings.owner || '', monthlyFee: num(s.monthlyFee), createdAt: new Date().toISOString() };
+          if (ms.length > 1) { p.months = ms; p.alloc = allocate(s, ms, amt2); }
           S.payments.push(p);
+          p.balanceAfter = outstanding(s);
           S.settings.receiptSeq = r.seq + 1;
           persist('payments', 'settings');
           toast('Payment saved · ' + p.receiptNo);
@@ -1502,43 +1554,75 @@
       }
     });
   }
-  function receiptHTML(p) {
+  function receiptData(p, copy) {
     var st = S.settings, s = studentById(p.studentId);
-    var balance = s ? dueFor(s, p.month) : null;
-    var r = function (k, v) { return '<tr><th>' + k + '</th><td>' + v + '</td></tr>'; };
-    return '<div class="receipt"><div class="r-head"><img src="assets/logo.jpeg" alt="" width="64" height="64"><div><h2>' + esc(st.schoolName) + '</h2><p>' + esc(st.address) + '</p><p>📞 ' + esc(st.phone) + (st.email ? ' · ✉️ ' + esc(st.email) : '') + '</p></div></div>' +
-      '<div class="r-title">FEE RECEIPT</div><div class="r-meta"><span>Receipt No: <b>' + esc(p.receiptNo) + '</b></span><span>Date: <b>' + fmtDate(p.paidOn) + '</b></span></div>' +
-      '<table class="r-table">' + r('Student', '<b>' + esc(p.studentName) + '</b>') + r('Class', esc(className(p.classId))) + r('Parent / Guardian', esc(p.parentName || (s && s.parentName) || '—')) +
-      r('Fee for month', esc(fmtMonth(p.month))) + r('Payment mode', esc(p.mode) + (p.ref ? ' · Ref ' + esc(p.ref) : '')) + (p.note ? r('Note', esc(p.note)) : '') +
-      r('Amount received', '<b class="r-amt">' + inr(p.amount) + '</b>') + r('In words', 'Rupees ' + esc(inWords(p.amount)) + ' Only') +
-      (balance != null && s && num(s.monthlyFee) ? r('Balance for ' + esc(fmtMonth(p.month)), balance > 0 ? inr(balance) : 'Nil — fully paid ✓') : '') + '</table>' +
-      '<div class="r-foot"><span>Thank you! 🌈</span><span class="sign">Authorised signature</span></div><p class="r-small">This is a computer-generated receipt.</p></div>';
+    var hasSnap = p.balanceAfter != null && isFinite(Number(p.balanceAfter));
+    var bal = hasSnap ? num(p.balanceAfter) : (s && num(s.monthlyFee) ? outstanding(s) : null);
+    return {
+      school: { name: st.schoolName, address: st.address, phone: st.phone, email: st.email }, logo: 'assets/logo.jpeg',
+      receiptNo: p.receiptNo, date: p.paidOn, studentName: p.studentName, className: className(p.classId), parentName: p.parentName || (s && s.parentName) || '',
+      months: payMonths(p), monthlyFee: p.monthlyFee != null ? p.monthlyFee : (s ? s.monthlyFee : 0), amount: p.amount, mode: p.mode, ref: p.ref,
+      balance: bal, balanceLabel: hasSnap ? 'Balance due after this payment' : 'Balance due (as on ' + fmtDate(todayISO()) + ')',
+      receivedBy: p.receivedBy || '', copy: copy || ''
+    };
   }
-  function receiptText(p) {
-    return S.settings.schoolName + '\nFee Receipt ' + p.receiptNo + '\n\nStudent: ' + p.studentName + ' (' + className(p.classId) + ')\nFee month: ' + fmtMonth(p.month) +
-      '\nAmount: ' + inr(p.amount) + ' (' + p.mode + ')\nPaid on: ' + fmtDate(p.paidOn) + '\n\nThank you! 🙏\n' + S.settings.phone;
-  }
+  function receiptText(p) { return window.LWReceipt.text(receiptData(p)); }
   function findPayment(id) { return S.payments.filter(function (p) { return p.id === id; })[0]; }
+  function receiptWaLink(p) {
+    var s = studentById(p.studentId), wa = s ? (s.whatsapp || s.phone) : '';
+    return wa && validPhone(wa) ? waHref(wa, receiptText(p)) : 'https://wa.me/?text=' + encodeURIComponent(receiptText(p));
+  }
+  function receiptFileName(p) { return 'Receipt ' + p.receiptNo + ' - ' + p.studentName; }
   function openReceipt(id) {
     var p = findPayment(id);
-    if (!p) return;
-    var s = studentById(p.studentId);
-    var wa = s ? (s.whatsapp || s.phone) : '';
-    var waLink = wa ? waHref(wa, receiptText(p)) : 'https://wa.me/?text=' + encodeURIComponent(receiptText(p));
+    if (!p || !window.LWReceipt) return;
+    var s = studentById(p.studentId), wa = s ? (s.whatsapp || s.phone) : '';
     openModal({
       title: 'Receipt ' + p.receiptNo, size: 'wide',
-      body: '<div class="receipt-preview">' + receiptHTML(p) + '</div><div class="form-actions"><a class="btn wa-btn" href="' + esc(waLink) + '" target="_blank" rel="noopener">' + WA_SVG + ' Share on WhatsApp</a><button type="button" class="btn primary" data-act="receipt-print" data-id="' + esc(p.id) + '">🖨️ Print</button></div>'
+      body: '<div class="receipt-preview">' + window.LWReceipt.html(receiptData(p)) + '</div>' +
+        '<div class="receipt-actions"><a class="btn wa-btn" href="' + esc(receiptWaLink(p)) + '" target="_blank" rel="noopener">' + WA_SVG + ' Share on WhatsApp' + (wa && validPhone(wa) ? '' : ' (choose chat)') + '</a>' +
+        '<button type="button" class="btn ghost" data-act="receipt-img" data-id="' + esc(p.id) + '">🖼️ Save image</button>' +
+        '<button type="button" class="btn ghost" data-act="receipt-pdf" data-id="' + esc(p.id) + '">📄 Save as PDF</button>' +
+        '<button type="button" class="btn primary" data-act="receipt-print" data-id="' + esc(p.id) + '">🖨️ Print (2 copies)</button></div>' +
+        '<p class="muted small">Save as PDF: in the print window choose <b>Save as PDF</b> (Android: <b>Save as PDF</b> printer; iPhone: Share → Save to Files). Print puts a parent copy and an office copy on one A4 page.</p>'
     });
   }
-  function printReceipt(id) {
+  function printReceipt(id, single) {
+    var p = findPayment(id);
+    if (!p || !window.LWReceipt) return;
+    window.LWReceipt.print(single ? [receiptData(p)] : [receiptData(p, 'Parent copy'), receiptData(p, 'Office copy')], receiptFileName(p));
+  }
+  function saveReceiptImage(id) {
+    var p = findPayment(id);
+    if (!p || !window.LWReceipt) return;
+    window.LWReceipt.saveImage(receiptData(p), receiptFileName(p)).then(function (r) { if (r === 'downloaded') toast('Receipt image saved'); }).catch(function (e) { toast('Could not make the image: ' + (e && e.message || e), 'err'); });
+  }
+  function renumberReceipt(id) {
     var p = findPayment(id);
     if (!p) return;
-    var pr = $('#print-root');
-    pr.innerHTML = receiptHTML(p) + '<div class="r-cut">✂ - - - - - - - - - - - - - - - - - - - office copy - - - - - - - - - - - - - - - - - - -</div>' + receiptHTML(p);
-    var imgs = $$('img', pr).filter(function (i) { return !i.complete; });
-    var go = function () { setTimeout(function () { window.print(); }, 50); };
-    if (!imgs.length) go();
-    else { var left = imgs.length; imgs.forEach(function (i) { var done = function () { if (--left === 0) go(); }; i.onload = done; i.onerror = done; }); }
+    var r = nextReceiptNo(), old = p.receiptNo;
+    confirmBox('Give this payment (' + p.studentName + ', ' + inr(p.amount) + ') the new receipt number ' + r.no + ' instead of ' + old + '? If you already gave the parent a receipt with ' + old + ', send them the new one.', { ok: 'Use ' + r.no, danger: false, title: 'New receipt number' }).then(function (ok) {
+      if (!ok) return;
+      p.renumberedFrom = old; p.receiptNo = r.no; p.seq = r.seq;
+      S.settings.receiptSeq = r.seq + 1;
+      persist('payments', 'settings');
+      toast('Receipt is now ' + r.no);
+      render();
+    });
+  }
+  function openStudentReceipts(sid) {
+    var s = studentById(sid);
+    var pays = S.payments.filter(function (p) { return p.studentId === sid; }).sort(function (a, b) { return (b.paidOn || '') + String(b.seq || 0).padStart(9, '0') < (a.paidOn || '') + String(a.seq || 0).padStart(9, '0') ? -1 : 1; });
+    var name = s ? s.name : (pays[0] ? pays[0].studentName : 'Student');
+    var total = pays.reduce(function (a, p) { return a + num(p.amount); }, 0);
+    var body = '<div class="rcpt-total"><span>Receipts: <b>' + pays.length + '</b></span><span>Total paid: <b>' + inr(total) + '</b></span>' + (s && num(s.monthlyFee) ? '<span>Monthly fee: <b>' + inr(s.monthlyFee) + '</b></span><span>Pending now: <b class="coral-t">' + inr(outstanding(s)) + '</b></span>' : '') + '</div>' +
+      (pays.length ? '<div class="table-wrap"><table class="table responsive"><thead><tr><th>Receipt</th><th>Paid on</th><th>Fee for</th><th>Mode</th><th class="num">Amount</th><th class="act-col"><span class="sr">Actions</span></th></tr></thead><tbody>' +
+        pays.map(function (p) {
+          return '<tr><td data-label="Receipt"><b>' + esc(p.receiptNo) + '</b></td><td data-label="Paid on">' + fmtDate(p.paidOn) + '</td><td data-label="Fee for">' + esc(periodText(p)) + '</td><td data-label="Mode">' + esc(p.mode) + '</td><td data-label="Amount" class="num"><b>' + inr(p.amount) + '</b></td>' +
+            '<td class="actions"><button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="View / print receipt" aria-label="Receipt ' + esc(p.receiptNo) + '">🧾</button></td></tr>';
+        }).join('') + '</tbody></table></div>' : '<p class="muted">No payments yet.</p>') +
+      (s && s.status !== 'Left' ? '<div class="form-actions"><button class="btn primary" data-act="pay-add" data-student="' + esc(sid) + '">💰 Record payment</button></div>' : '');
+    openModal({ title: '🧾 Receipts · ' + name, size: 'wide', body: body });
   }
 
   /* =====================================================================
@@ -1743,6 +1827,7 @@
       field('Temporary password *', '<span class="pw-wrap"><input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required><button type="button" class="pw-toggle" data-act="pw-toggle" aria-label="Show password">👁️</button></span>', '<small class="hint">At least 8 characters. <button type="button" class="link" data-act="pw-generate">Suggest one</button></small>') +
       '</div><p class="note">Share the email and temporary password with the teacher (for example on WhatsApp). They can change it in Settings → My account.</p><button class="btn primary">Create login</button></form></details></section>';
 
+    html += '<section class="card"><h2>💰 Fees in the Parents app</h2><label class="switch-row"><input type="checkbox" data-change="fees-to-parents"' + (S.settings.showFeesToParents === true ? ' checked' : '') + '><span><b>Show fees to parents</b><br><small class="muted">When on, each parent sees only their own child’s monthly fee, pending amount and receipts in the Parents app (no notes, no other children). When off, parents see “Fee details are not shown yet”. The database checks this switch, so it cannot be bypassed.</small></span></label></section>';
     html += parentLoginsCardHTML();
     html += '<section class="card"><h2>🔐 My password</h2><p class="muted small">Signed in as ' + esc(ME.email || '') + '</p>' + pwForm + '</section>' + secNote;
 
@@ -2006,8 +2091,8 @@
         Object.keys(rec).forEach(function (id) { var s = studentById(id); rows.push([fmtDate(d), s ? className(s.classId) : '', s ? s.name : '(deleted student)', ATT[rec[id]] ? ATT[rec[id]].label : rec[id]]); });
       });
     } else if (t === 'payments') {
-      rows = [['Receipt no', 'Paid on', 'Student', 'Class', 'Parent', 'Fee month', 'Amount (INR)', 'Mode', 'Reference', 'Note']].concat(
-        S.payments.slice().sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); }).map(function (p) { return [p.receiptNo, fmtDate(p.paidOn), p.studentName, className(p.classId), p.parentName, fmtMonth(p.month), num(p.amount), p.mode, p.ref, p.note]; }));
+      rows = [['Receipt no', 'Paid on', 'Student', 'Class', 'Parent', 'Fee for', 'Amount (INR)', 'Mode', 'Reference', 'Received by', 'Note']].concat(
+        S.payments.slice().sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); }).map(function (p) { return [p.receiptNo, fmtDate(p.paidOn), p.studentName, className(p.classId), p.parentName, periodText(p), num(p.amount), p.mode, p.ref, p.receivedBy || '', p.note]; }));
     } else if (t === 'enquiries') {
       rows = [['Date', 'Parent', 'Child', 'Age (yrs)', 'Phone', 'Source', 'Status', 'Follow-up', 'Notes']].concat(
         S.enquiries.slice().sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }).map(function (e) { return [fmtDate(e.date), e.parentName, e.childName, e.childAge, e.phone, e.source, e.status, fmtDate(e.followUp), e.notes]; }));
@@ -2194,6 +2279,10 @@
     },
     'receipt-view': function (el) { if (isAdmin()) openReceipt(attr(el, 'id')); },
     'receipt-print': function (el) { printReceipt(attr(el, 'id')); },
+    'receipt-pdf': function (el) { printReceipt(attr(el, 'id'), true); },
+    'receipt-img': function (el) { saveReceiptImage(attr(el, 'id')); },
+    'receipt-renum': function (el) { if (isAdmin()) renumberReceipt(attr(el, 'id')); },
+    'student-receipts': function (el) { if (isAdmin()) openStudentReceipts(attr(el, 'id')); },
     'enq-add': function () { openEnquiryForm(null); },
     'enq-edit': function (el) { var e = findEnq(attr(el, 'id')); if (e) openEnquiryForm(e); },
     'enq-del': function (el) {
@@ -2316,7 +2405,13 @@
       e.status = el.value; e.updatedAt = new Date().toISOString();
       persist('enquiries'); toast('Status: ' + e.status); render();
     },
-    'restore': function (el) { doRestore(el); }
+    'restore': function (el) { doRestore(el); },
+    'fees-to-parents': function (el) {
+      if (!isAdmin()) return;
+      S.settings.showFeesToParents = !!el.checked;
+      persist('settings');
+      toast(el.checked ? 'Parents can now see their child’s fees and receipts' : 'Fees are hidden in the Parents app');
+    }
   };
   var INPUTS = {
     'student-search': function (el) { UI.search = el.value; var l = $('#student-list'); if (l) l.innerHTML = studentListHTML(UI.classTab); },
@@ -2363,7 +2458,6 @@
   });
   window.addEventListener('hashchange', function () { closeModal(); render(); });
   window.addEventListener('beforeunload', function (e) { if (anyDirty()) { e.preventDefault(); e.returnValue = ''; } });
-  window.addEventListener('afterprint', function () { $('#print-root').innerHTML = ''; });
   /* ----- cloud sync wiring ----- */
   var pendingRender = false;
   function userIsTyping() {

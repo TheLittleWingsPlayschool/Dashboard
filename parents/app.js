@@ -1,5 +1,5 @@
 /*!
- * Little Wings Parents (v1.0.0) — attendance + notices for parents.
+ * Little Wings Parents (v1.1.0) — attendance, notices and fee receipts for parents.
  * Plain static app, no build step. Talks to the school's Supabase project with
  * the PUBLIC publishable key only; what a parent can see is decided by the
  * database (RLS + parent-only RPCs). Child data is cached in this browser for
@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   var TZ = 'Asia/Kolkata';
   var DOMAIN = 'parents.littlewings.app';
   var OFFICE = '+91 79955 54105', OFFICE_TEL = 'tel:+917995554105';
@@ -60,11 +60,11 @@
   function isStandalone() { return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true; }
 
   /* ---------- state ---------- */
-  var S = null; // { uid, name, phone, children:[], cur, month, att:{sid:{ym:{day:st}}}, notices:[], savedAt, error }
+  var S = null; // { uid, name, phone, children:[], cur, month, att:{sid:{ym:{day:st}}}, fees:{sid:{enabled,sum,pays}}, notices:[], savedAt, error }
   var tab = 'home', online = navigator.onLine !== false, loading = false, deferredInstall = null, channel = null, pollT = null, lastRefresh = 0;
 
   function cacheKey() { return CACHE + S.uid; }
-  function saveCache() { if (S) lsSet(cacheKey(), { v: 1, name: S.name, phone: S.phone, children: S.children, cur: S.cur, att: S.att, notices: S.notices, savedAt: S.savedAt }); }
+  function saveCache() { if (S) lsSet(cacheKey(), { v: 1, name: S.name, phone: S.phone, children: S.children, cur: S.cur, att: S.att, fees: S.fees, notices: S.notices, savedAt: S.savedAt }); }
   function clearAllLocal() {
     try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('lwp_') === 0) localStorage.removeItem(k); }); } catch (e) { /* ignore */ }
   }
@@ -85,7 +85,7 @@
     document.title = 'Little Wings Parents';
     $('#app').innerHTML = '<div class="auth-wrap"><div class="auth-card">' +
       '<img class="auth-logo" src="../assets/logo.jpeg" alt="The Little Wings Play School logo" width="104" height="104">' +
-      '<h1>Little Wings Parents</h1><p class="hello"><span class="telugu">నమస్తే 🙏</span> Welcome! See your child’s attendance and school notices.</p>' +
+      '<h1>Little Wings Parents</h1><p class="hello"><span class="telugu">నమస్తే 🙏</span> Welcome! See your child’s attendance, fee receipts and school notices.</p>' +
       '<form id="login" novalidate>' +
       '<label class="field"><span class="lbl">Mobile number</span><span class="tel-wrap"><span class="cc">+91</span><input name="mobile" type="tel" inputmode="numeric" autocomplete="username" maxlength="14" placeholder="98765 43210" value="' + esc(fmtMobile(lsGet('lwp_last') || '')) + '" required></span></label>' +
       '<label class="field"><span class="lbl">Password</span><span class="pw-wrap"><input name="password" type="password" autocomplete="current-password" maxlength="72" required><button type="button" class="pw-toggle" data-act="pw" aria-label="Show password">👁️</button></span></label>' +
@@ -126,11 +126,11 @@
   /* ---------- session ---------- */
   function start(user) {
     var email = user.email || '';
-    S = { uid: user.id, name: '', phone: email.split('@')[1] === DOMAIN ? email.split('@')[0] : '', children: [], cur: '', month: thisMonth(), att: {}, notices: [], savedAt: null, error: '' };
+    S = { uid: user.id, name: '', phone: email.split('@')[1] === DOMAIN ? email.split('@')[0] : '', children: [], cur: '', month: thisMonth(), att: {}, fees: {}, notices: [], savedAt: null, error: '' };
     var c = lsGet(cacheKey());
     if (c && c.v === 1) {
       S.name = c.name || ''; S.children = Array.isArray(c.children) ? c.children : []; S.cur = c.cur || '';
-      S.att = c.att && typeof c.att === 'object' ? c.att : {}; S.notices = Array.isArray(c.notices) ? c.notices : []; S.savedAt = c.savedAt || null;
+      S.att = c.att && typeof c.att === 'object' ? c.att : {}; S.fees = c.fees && typeof c.fees === 'object' ? c.fees : {}; S.notices = Array.isArray(c.notices) ? c.notices : []; S.savedAt = c.savedAt || null;
     }
     if (S.children.length) render(); else showLoading('Loading your child’s details…');
     startLive();
@@ -149,6 +149,19 @@
       if (r.error) throw r.error;
       var m = {}; (r.data || []).forEach(function (x) { if (ST[x.status]) m[String(x.day).slice(0, 10)] = x.status; });
       S.att[sid] = S.att[sid] || {}; S.att[sid][ym] = m;
+    });
+  }
+  // Fees: only through the parent_fees / parent_payments RPCs. The database
+  // returns the signed-in parent's own child only, and nothing at all unless
+  // the school switched on "Show fees to parents".
+  function rpcFees(sid) {
+    return Promise.all([SB.rpc('parent_fees', { p_student: sid }), SB.rpc('parent_payments', { p_student: sid })]).then(function (r) {
+      if (r[0].error) throw r[0].error;
+      if (r[1].error) throw r[1].error;
+      var sum = (r[0].data || [])[0] || null;
+      // The switch is school-wide: when it is off, forget every child's saved fee data on this phone.
+      if (!sum || !sum.enabled) { if (sum && !sum.enabled) S.fees = {}; S.fees[sid] = { enabled: false, at: new Date().toISOString() }; return; }
+      S.fees[sid] = { enabled: true, sum: sum, pays: r[1].data || [], at: new Date().toISOString() };
     });
   }
   function loadNotices() {
@@ -179,6 +192,7 @@
       var k = child();
       if (k) {
         jobs.push(rpcAttendance(k.id, thisMonth()));
+        jobs.push(rpcFees(k.id));
         if (S.month !== thisMonth()) jobs.push(rpcAttendance(k.id, S.month));
       }
       return Promise.all(jobs);
@@ -286,13 +300,75 @@
     }
     return html;
   }
+  function inr(n) { return window.LWReceipt ? window.LWReceipt.inr(n) : '₹' + (Number(n) || 0); }
+  function feeMonthName(ym) { return /^\d{4}-\d{2}$/.test(ym || '') ? monthName(ym) : ''; }
+  function viewFees() {
+    var k = child();
+    if (!k) return noChild();
+    var f = S.fees[k.id];
+    if (!f) {
+      if (online) { setTimeout(function () { if (S && !S.fees[k.id]) rpcFees(k.id).then(function () { saveCache(); render(); }).catch(function (e) { if (isNetErr(e)) { online = false; render(); } }); }, 0); return '<section class="card"><h2>💰 Fees</h2><div class="spinner"></div></section>'; }
+      return '<section class="card"><h2>💰 Fees</h2><p class="note warn">Fee details are not saved on this phone yet. Connect to the internet to see them.</p></section>';
+    }
+    if (!f.enabled) {
+      return '<section class="card"><div class="empty"><div class="e">💰</div><p><b>Fee details are not shown yet.</b><br>The school will turn this on soon. For any fee question, please call the school office: <a href="' + OFFICE_TEL + '">' + OFFICE + '</a>.</p></div></section>';
+    }
+    var m = f.sum, pays = f.pays || [], ym = thisMonth();
+    var due = Number(m.total_due) || 0, nowDue = Number(m.this_month_due) || 0, fee = Number(m.monthly_fee) || 0;
+    var html = '<section class="card"><h2>💰 Fee summary</h2>';
+    if (fee > 0) {
+      html += '<div class="fee-due ' + (due > 0 ? 'due' : 'ok') + '"><small>' + (due > 0 ? 'Pending fees' : 'Fees') + '</small><b>' + (due > 0 ? esc(inr(due)) : 'All paid ✓') + '</b>' +
+        (due > 0 ? '<span>Please pay at the school office. Ignore if already paid today.</span>' : '<span>No pending fees as of ' + esc(feeMonthName(m.as_of_month) || monthName(ym)) + '. Thank you! 🙏</span>') + '</div>' +
+        '<div class="kv-grid"><div><small>Monthly fee</small><b>' + esc(inr(fee)) + '</b></div>' +
+        '<div><small>' + esc(feeMonthName(m.as_of_month) || monthName(ym)) + '</small><b class="' + (nowDue > 0 ? 'coral-t' : 'green-t') + '">' + (nowDue > 0 ? esc(inr(nowDue)) + ' due' : 'Paid ✓') + '</b></div>' +
+        '<div><small>Months paid</small><b>' + (Number(m.months_paid) || 0) + ' of ' + (Number(m.months_billed) || 0) + '</b></div>' +
+        '<div><small>Total paid</small><b>' + esc(inr(m.total_paid)) + '</b></div></div>' +
+        (m.fees_from ? '<p class="muted small">Counted from ' + esc(feeMonthName(m.fees_from)) + ' to ' + esc(feeMonthName(m.as_of_month)) + '.</p>' : '');
+    } else {
+      html += '<p class="muted">The monthly fee is not set yet. Please contact the school office.</p>';
+    }
+    html += '</section><section class="card"><h2>🧾 Payments &amp; receipts</h2>';
+    if (!pays.length) html += '<div class="empty"><div class="e">🧾</div><p>No payments recorded yet.</p></div>';
+    else html += '<ul class="pay-list">' + pays.map(function (p) {
+      return '<li><div class="pay-main"><b>' + esc(inr(p.amount)) + '</b><span>' + esc(window.LWReceipt ? window.LWReceipt.period(p.months) : '') + '</span><small>' + esc(p.receipt_no) + ' · ' + esc(window.LWReceipt ? window.LWReceipt.fmtDate(p.paid_on) : p.paid_on) + ' · ' + esc(p.mode) + '</small></div>' +
+        '<button class="btn small sky" data-act="receipt" data-id="' + esc(p.id) + '">🧾 View / Print receipt</button></li>';
+    }).join('') + '</ul>';
+    html += '<p class="muted small">Saved ' + esc(stamp(f.at)) + '. Questions about fees? Call <a href="' + OFFICE_TEL + '">' + OFFICE + '</a>.</p></section>';
+    return html;
+  }
+  function receiptFor(pid) {
+    var k = child(), f = k && S.fees[k.id];
+    if (!f || !f.enabled) return null;
+    var p = (f.pays || []).filter(function (x) { return x.id === pid; })[0];
+    if (!p) return null;
+    var m = f.sum, snap = p.balance_after != null && isFinite(Number(p.balance_after));
+    return {
+      school: { name: m.school_name, address: m.school_address, phone: m.school_phone, email: m.school_email }, logo: '../assets/logo.jpeg',
+      receiptNo: p.receipt_no, date: p.paid_on, studentName: p.student_name || k.name, className: className(p.class_id || k.classId), parentName: p.parent_name || m.parent_name || '',
+      months: p.months || [], monthlyFee: p.monthly_fee != null ? p.monthly_fee : m.monthly_fee, amount: p.amount, mode: p.mode, ref: p.ref,
+      balance: snap ? Number(p.balance_after) : (Number(m.monthly_fee) > 0 ? Number(m.total_due) || 0 : null),
+      balanceLabel: snap ? 'Balance due after this payment' : 'Balance due (as on ' + window.LWReceipt.fmtDate(todayISO()) + ')',
+      receivedBy: p.received_by || ''
+    };
+  }
+  function openReceipt(pid) {
+    var r = receiptFor(pid);
+    if (!r || !window.LWReceipt) return;
+    $('#sheet-root').innerHTML = '<div class="sheet-bg" data-act="sheet-bg"><div class="sheet wide" id="rcpt-sheet" role="dialog" aria-modal="true" aria-label="Receipt"><div class="sheet-head"><h2>🧾 Receipt ' + esc(r.receiptNo) + '</h2><button class="icon-btn" data-act="sheet-close" aria-label="Close">✕</button></div>' +
+      '<div class="rcpt-preview">' + window.LWReceipt.html(r) + '</div>' +
+      '<div class="rcpt-actions"><button class="btn primary" data-act="rcpt-print" data-id="' + esc(pid) + '">🖨️ Print / Save as PDF</button>' +
+      '<button class="btn sky" data-act="rcpt-img" data-id="' + esc(pid) + '">🖼️ Save image</button>' +
+      '<a class="btn ghost" href="https://wa.me/?text=' + encodeURIComponent(window.LWReceipt.text(r)) + '" target="_blank" rel="noopener">💬 Share on WhatsApp</a></div>' +
+      '<p class="muted small">To save a PDF: tap Print, then choose <b>Save as PDF</b> (iPhone: tap Share → Save to Files).</p></div></div>';
+    document.body.classList.add('sheet-open');
+  }
   function noChild() {
     return '<section class="card"><div class="empty"><div class="e">🧒</div><p><b>No child is linked to this login yet.</b><br>Please contact the school office: <a href="' + OFFICE_TEL + '">' + OFFICE + '</a>.</p></div></section>' +
       '<section class="card"><h2>📢 Notices</h2>' + (S.notices.length ? S.notices.map(function (n) { return noticeHTML(n, false); }).join('') : '<p class="muted">No notices right now.</p>') + '</section>';
   }
   function nav() {
     var nc = S ? newCount() : 0;
-    return '<nav class="bottomnav" aria-label="Main">' + [['home', '🏠', 'Home'], ['calendar', '📅', 'Attendance'], ['notices', '📢', 'Notices']].map(function (x) {
+    return '<nav class="bottomnav" aria-label="Main">' + [['home', '🏠', 'Home'], ['calendar', '📅', 'Attendance'], ['fees', '💰', 'Fees'], ['notices', '📢', 'Notices']].map(function (x) {
       return '<button data-act="tab" data-tab="' + x[0] + '" class="' + (tab === x[0] ? 'active' : '') + '"' + (tab === x[0] ? ' aria-current="page"' : '') + '><span class="ni">' + x[1] + '</span>' + x[2] + (x[0] === 'notices' && nc && tab !== 'notices' ? '<span class="dot">' + (nc > 9 ? '9+' : nc) + '</span>' : '') + '</button>';
     }).join('') + '</nav>';
   }
@@ -300,7 +376,7 @@
   function render() {
     if (!S) return;
     var y = window.scrollY;
-    var body = tab === 'calendar' ? viewCalendar() : tab === 'notices' ? viewNotices() : viewHome();
+    var body = tab === 'calendar' ? viewCalendar() : tab === 'notices' ? viewNotices() : tab === 'fees' ? viewFees() : viewHome();
     $('#app').innerHTML = header() + '<main class="view" id="view">' + body + '<p class="muted small center">Little Wings Parents v' + VERSION + ' · India time</p></main>' + nav();
     document.title = (child() ? child().name + ' · ' : '') + 'Little Wings Parents';
     window.scrollTo(0, y);
@@ -341,7 +417,7 @@
   var ACTS = {
     pw: function (el) { var i = el.parentNode.querySelector('input'); var show = i.type === 'password'; i.type = show ? 'text' : 'password'; el.textContent = show ? '🙈' : '👁️'; el.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); },
     tab: function (el) { tab = el.getAttribute('data-tab'); if (tab === 'calendar' && !S.month) S.month = thisMonth(); render(); window.scrollTo(0, 0); },
-    kid: function (el) { S.cur = el.getAttribute('data-id'); saveCache(); render(); var k = child(); if (k && online) Promise.all([rpcAttendance(k.id, thisMonth()), S.month !== thisMonth() ? rpcAttendance(k.id, S.month) : null]).then(function () { saveCache(); render(); }).catch(function (e) { if (isNetErr(e)) { online = false; render(); } }); },
+    kid: function (el) { S.cur = el.getAttribute('data-id'); saveCache(); render(); var k = child(); if (k && online) Promise.all([rpcAttendance(k.id, thisMonth()), rpcFees(k.id), S.month !== thisMonth() ? rpcAttendance(k.id, S.month) : null]).then(function () { saveCache(); render(); }).catch(function (e) { if (isNetErr(e)) { online = false; render(); } }); },
     month: function (el) {
       var n = addMonths(S.month, +el.getAttribute('data-d'));
       if (n > thisMonth() || n < addMonths(thisMonth(), -23)) return;
@@ -349,6 +425,9 @@
     },
     refresh: function () { if (navigator.onLine === false) { online = false; render(); toast('You are offline', 'err'); return; } refresh(true).then(function () { if (online && !S.error) toast('Updated ✓'); }); render(); },
     account: openSheet,
+    receipt: function (el) { openReceipt(el.getAttribute('data-id')); },
+    'rcpt-print': function (el) { var r = receiptFor(el.getAttribute('data-id')); if (r) window.LWReceipt.print([r], 'Receipt ' + r.receiptNo + ' - ' + r.studentName); },
+    'rcpt-img': function (el) { var r = receiptFor(el.getAttribute('data-id')); if (r) window.LWReceipt.saveImage(r, 'Receipt ' + r.receiptNo + ' - ' + r.studentName).then(function (x) { if (x === 'downloaded') toast('Receipt image saved'); }).catch(function () { toast('Could not make the image', 'err'); }); },
     'sheet-close': closeSheet,
     'sheet-bg': function (el, e) { if (e.target === el) closeSheet(); },
     signout: function () { signOut(); },
