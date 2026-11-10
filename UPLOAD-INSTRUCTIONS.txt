@@ -1,0 +1,31 @@
+The Little Wings Play School — SEO update (v2)
+==============================================
+
+Upload these files into the existing GitHub Pages repo
+(TheLittleWingsPlaySchool / the same folder you updated last time).
+Do not rename folders. Replace the old files when GitHub asks.
+
+Required replacements:
+  index.html
+  style.css
+  sitemap.xml
+  robots.txt   (unchanged, safe to skip)
+
+Required new / replaced images in the assets/ folder:
+  assets/logo.jpeg
+  assets/logo-icon.jpeg   (new, smaller icon for the browser tab)
+  assets/classroom.png
+  assets/outdoor-play.png
+  assets/hero-play.png
+  assets/real_play1.jpg
+  assets/real_play2.jpg
+  assets/real_play3.jpg
+
+Leave app.js as it is unless you are replacing the whole folder.
+
+After you upload, open:
+  https://thelittlewingsplayschool.github.io/TheLittleWingsPlaySchool/
+
+Check that the logo, photos, Telugu line under the headline, and the
+FAQ section (above Contact) all appear. Then in Google Search Console
+use URL Inspection on the homepage and click Request indexing.
