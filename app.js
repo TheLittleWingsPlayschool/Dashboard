@@ -1,12 +1,13 @@
 /*!
  * The Little Wings Play School — Admin & Classes Dashboard
- * Plain static app: no build step, no server, no external dependencies.
- * All data is stored in this browser's localStorage (keys prefixed "lw_").
+ * Plain static app: no build step. Data is stored in the school's private
+ * Supabase database (Auth + Postgres with Row Level Security) and an offline
+ * copy is kept in this browser's localStorage. See README.md.
  */
 (function () {
   'use strict';
 
-  var APP_VERSION = '1.0.0';
+  var APP_VERSION = '2.0.0';
   var TZ = 'Asia/Kolkata';
 
   var CLASSES = [
@@ -46,90 +47,355 @@
 
   /* =====================================================================
    * DATA LAYER — the only place that touches storage.
-   * To add cloud sync later, replace load/save (or use subscribe()) here.
+   * Data lives in the school's private Supabase database. This module keeps
+   * an offline copy per signed-in user in localStorage ("lwc_<userId>"),
+   * writes changes through to Supabase (queued while offline, last write
+   * wins), and pulls remote changes (Realtime + polling + on tab focus).
+   * The UI keeps calling Store.load(name) / Store.save(name, value) exactly
+   * like v1; Store diffs each collection into per-record rows.
    * ===================================================================== */
+  var CFG = window.LW_CONFIG || {};
+  var RECOVERY = /(^|[#&])type=recovery(&|$)/.test(location.hash || '');
+  var SB = (window.supabase && CFG.supabaseUrl && CFG.supabaseKey) ? window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'lw-auth' }
+  }) : null;
+
   var Store = (function () {
-    var PREFIX = 'lw_';
-    var TABLES = ['settings', 'auth', 'users', 'students', 'attendance', 'payments', 'enquiries', 'staff'];
-    var listeners = [];
+    var LEGACY = 'lw_', CACHE = 'lwc_';
+    var TABLES = ['settings', 'users', 'students', 'attendance', 'payments', 'enquiries', 'staff'];
+    var DB = ['settings', 'students', 'student_fees', 'attendance', 'payments', 'enquiries', 'staff'];
+    var ADMIN_ONLY = { student_fees: 1, payments: 1, enquiries: 1, staff: 1 };
+    var ADMIN_WRITE = { settings: 1, student_fees: 1, payments: 1, enquiries: 1, staff: 1 };
+    var PK = { settings: 'id', students: 'id', student_fees: 'student_id', attendance: 'day,class_id', payments: 'id', enquiries: 'id', staff: 'id' };
+    var COLS = {
+      settings: 'id,data,deleted,updated_at', students: 'id,class_id,data,deleted,updated_at',
+      student_fees: 'student_id,monthly_fee,deleted,updated_at', attendance: 'day,class_id,data,deleted,updated_at',
+      payments: 'id,data,deleted,updated_at', enquiries: 'id,data,deleted,updated_at', staff: 'id,data,deleted,updated_at'
+    };
+    var listeners = [], statusListeners = [];
+    var U = null;            // { id, role }
+    var st = emptyState();
+    var status = { state: 'idle', pending: 0, message: '', lastSync: null, realtime: '' };
+    var chain = Promise.resolve();
+    var flushTimer = null, pullTimer = null, retryTimer = null, pollTimer = null, channel = null, rt = '', lastPull = 0, cacheWarned = false;
+    var onNoAccess = null;
+
+    function emptyState() { var r = {}; DB.forEach(function (t) { r[t] = {}; }); return { rows: r, profiles: [], profile: null, queue: {}, since: {}, lastSync: null, firstSyncDone: false }; }
     function clone(v) { return v === undefined ? v : JSON.parse(JSON.stringify(v)); }
-    function load(name, fallback) {
-      try {
-        var raw = localStorage.getItem(PREFIX + name);
-        return raw == null ? clone(fallback) : JSON.parse(raw);
-      } catch (e) {
-        console.warn('Could not read ' + name, e);
-        return clone(fallback);
+    function stable(v) {
+      if (v === null || v === undefined || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+      if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+      return '{' + Object.keys(v).filter(function (k) { return v[k] !== undefined; }).sort().map(function (k) { return JSON.stringify(k) + ':' + stable(v[k]); }).join(',') + '}';
+    }
+    function keyOf(t, r) { return t === 'attendance' ? r.day + '|' + r.class_id : t === 'student_fees' ? String(r.student_id) : String(r.id); }
+    function canon(t, r) {
+      var d = !!r.deleted;
+      if (t === 'student_fees') return { student_id: String(r.student_id), monthly_fee: Number(r.monthly_fee) || 0, deleted: d };
+      if (t === 'attendance') return { day: String(r.day).slice(0, 10), class_id: r.class_id, data: asObject(r.data), deleted: d };
+      if (t === 'students') return { id: String(r.id), class_id: r.class_id, data: asObject(r.data), deleted: d };
+      if (t === 'settings') return { id: 1, data: asObject(r.data), deleted: d };
+      return { id: String(r.id), data: asObject(r.data), deleted: d };
+    }
+    function isAdminRole() { return !!(U && U.role === 'admin'); }
+    function readable(t) { return isAdminRole() || !ADMIN_ONLY[t]; }
+    function writable(t) { return isAdminRole() || !ADMIN_WRITE[t]; }
+    function live(t) { var o = st.rows[t], out = []; Object.keys(o).forEach(function (k) { if (!o[k].deleted) out.push(o[k]); }); return out; }
+    function strip(rec, keys) { var o = {}; Object.keys(rec || {}).forEach(function (k) { if (keys.indexOf(k) < 0 && rec[k] !== undefined) o[k] = rec[k]; }); return clone(o); }
+    function notify(kind, name) { listeners.forEach(function (fn) { try { fn(name || '*', kind); } catch (e) { console.warn(e); } }); }
+    function pendingCount() { return Object.keys(st.queue).length; }
+    function setStatus(state, msg) {
+      if (state) status.state = state;
+      if (msg !== undefined) status.message = msg;
+      status.pending = pendingCount(); status.lastSync = st.lastSync; status.realtime = rt;
+      statusListeners.forEach(function (fn) { try { fn(status); } catch (e) { console.warn(e); } });
+    }
+
+    /* ---------- collections <-> rows ---------- */
+    function collection(name) {
+      if (name === 'settings') { var s = st.rows.settings['1']; return s && !s.deleted ? clone(s.data) : {}; }
+      if (name === 'students') {
+        var fees = st.rows.student_fees;
+        return live('students').map(function (r) {
+          var o = clone(r.data); o.id = r.id; o.classId = r.class_id;
+          if (isAdminRole()) { var f = fees[r.id]; o.monthlyFee = f && !f.deleted ? f.monthly_fee : 0; }
+          return o;
+        });
       }
+      if (name === 'attendance') { var a = {}; live('attendance').forEach(function (r) { a[r.day] = Object.assign(a[r.day] || {}, clone(r.data)); }); return a; }
+      if (name === 'users') return st.profiles.filter(function (p) { return p.role === 'teacher'; }).map(function (p) { return { id: p.id, name: p.name || p.email || 'Teacher', classId: p.class_id || '', email: p.email || '' }; });
+      if (name === 'payments' || name === 'enquiries' || name === 'staff') return live(name).map(function (r) { var o = clone(r.data); o.id = r.id; return o; });
+      return undefined;
+    }
+    function load(name, fallback) { if (!U) return clone(fallback); var v = collection(name); return v === undefined ? clone(fallback) : v; }
+    function toRows(name, value) {
+      var out = {};
+      if (name === 'settings') out.settings = { '1': { id: 1, data: strip(asObject(value), []), deleted: false } };
+      else if (name === 'students') {
+        out.students = {}; if (isAdminRole()) out.student_fees = {};
+        asArray(value).forEach(function (s) {
+          if (!s || !s.id || !CLASS_BY_ID[s.classId]) return;
+          var id = String(s.id);
+          out.students[id] = { id: id, class_id: s.classId, data: strip(s, ['id', 'classId', 'monthlyFee']), deleted: false };
+          if (out.student_fees) out.student_fees[id] = { student_id: id, monthly_fee: num(s.monthlyFee), deleted: false };
+        });
+      } else if (name === 'attendance') {
+        out.attendance = {};
+        var cls = {}; live('students').forEach(function (r) { cls[r.id] = r.class_id; });
+        var val = asObject(value);
+        Object.keys(val).forEach(function (day) {
+          if (!isISODate(day)) return;
+          var rec = asObject(val[day]);
+          Object.keys(rec).forEach(function (sid) {
+            var c = cls[sid]; if (!c || !ATT[rec[sid]]) return;
+            var k = day + '|' + c;
+            (out.attendance[k] = out.attendance[k] || { day: day, class_id: c, data: {}, deleted: false }).data[sid] = rec[sid];
+          });
+        });
+      } else if (name === 'payments' || name === 'enquiries' || name === 'staff') {
+        out[name] = {};
+        asArray(value).forEach(function (r) { if (r && r.id) out[name][String(r.id)] = { id: String(r.id), data: strip(r, ['id']), deleted: false }; });
+      }
+      return out;
+    }
+    function enqueue(t, k) { var q = t + '|' + k, old = st.queue[q]; st.queue[q] = { t: t, k: k, v: (old ? old.v : 0) + 1 }; }
+    function diff(t, map) {
+      var cur = st.rows[t], n = 0;
+      Object.keys(map).forEach(function (k) { if (!cur[k] || stable(cur[k]) !== stable(map[k])) { cur[k] = map[k]; enqueue(t, k); n++; } });
+      Object.keys(cur).forEach(function (k) {
+        if (!map[k] && !cur[k].deleted) {
+          var tomb = clone(cur[k]); tomb.deleted = true;
+          if ('data' in tomb) tomb.data = {};
+          if (t === 'student_fees') tomb.monthly_fee = 0;
+          cur[k] = tomb; enqueue(t, k); n++;
+        }
+      });
+      return n;
     }
     function save(name, value) {
-      try {
-        localStorage.setItem(PREFIX + name, JSON.stringify(value));
-        listeners.forEach(function (fn) { try { fn(name, value); } catch (e) { console.warn(e); } });
-        return true;
-      } catch (e) {
-        toast('Could not save on this device (storage full or blocked). Please take a backup.', 'err');
-        return false;
-      }
+      if (!U) return false;
+      var maps = toRows(name, value), n = 0;
+      Object.keys(maps).forEach(function (t) { if (writable(t)) n += diff(t, maps[t]); });
+      if (n) { saveCache(); setStatus(); scheduleFlush(250); }
+      notify('local', name);
+      return true;
     }
+
+    /* ---------- offline copy ---------- */
+    function cacheKey(id) { return CACHE + (id || (U && U.id)); }
+    function saveCache() {
+      if (!U) return;
+      try { localStorage.setItem(cacheKey(), JSON.stringify({ v: 2, rows: st.rows, profiles: st.profiles, profile: st.profile, queue: st.queue, since: st.since, lastSync: st.lastSync, firstSyncDone: st.firstSyncDone })); }
+      catch (e) { if (!cacheWarned) { cacheWarned = true; toast('This device’s offline copy is full. Online saving still works.', 'err'); } }
+    }
+    function init(userId) {
+      stop();
+      U = { id: userId, role: null };
+      st = emptyState();
+      try {
+        var c = JSON.parse(localStorage.getItem(cacheKey()) || 'null');
+        if (c && c.v === 2) {
+          DB.forEach(function (t) { st.rows[t] = asObject(c.rows && c.rows[t]); });
+          st.profiles = asArray(c.profiles); st.profile = c.profile || null; st.queue = asObject(c.queue);
+          st.since = asObject(c.since); st.lastSync = c.lastSync || null; st.firstSyncDone = !!c.firstSyncDone;
+        }
+      } catch (e) { console.warn('Offline copy unreadable, starting fresh', e); }
+      if (st.profile) U.role = st.profile.role;
+      setStatus(navigator.onLine === false ? 'offline' : 'idle', '');
+    }
+    function setProfile(p) { st.profile = p; if (U) U.role = p ? p.role : null; saveCache(); }
+    function reset() { stop(); U = null; st = emptyState(); }
+    function clearCache(id) { try { localStorage.removeItem(cacheKey(id)); } catch (e) { /* ignore */ } }
+
+    /* ---------- network ---------- */
+    function isNetwork(res) { return !res.status || /Failed to fetch|NetworkError|Load failed|network/i.test((res.error && res.error.message) || ''); }
+    function netErr() { var e = new Error('offline'); e.network = true; return e; }
+    function friendly(err) {
+      var m = (err && err.message) || 'unknown error';
+      if (/row-level security|permission denied/i.test(m)) return 'not allowed for your account';
+      return m;
+    }
+    function run(task) { var p = chain.then(task, task); chain = p.catch(function () {}); return p; }
+    async function flushNow() {
+      var byT = {}, repull = false;
+      Object.keys(st.queue).forEach(function (q) { var it = st.queue[q]; (byT[it.t] = byT[it.t] || []).push(it); });
+      for (var i = 0; i < DB.length; i++) {
+        var t = DB[i], list = byT[t];
+        if (!list) continue;
+        if (!writable(t)) { list.forEach(function (it) { delete st.queue[it.t + '|' + it.k]; }); continue; }
+        for (var j = 0; j < list.length; j += 200) {
+          var chunk = list.slice(j, j + 200);
+          var payload = chunk.map(function (it) { return st.rows[t][it.k]; }).filter(Boolean);
+          var res = await SB.from(t).upsert(payload, { onConflict: PK[t] });
+          if (res.error) {
+            if (isNetwork(res)) throw netErr();
+            if (res.status === 401) { try { await SB.auth.refreshSession(); } catch (e) { /* ignore */ } throw netErr(); }
+            console.warn('Rejected by server', t, res.error);
+            chunk.forEach(function (it) { delete st.queue[it.t + '|' + it.k]; });
+            st.since[t] = null; repull = true;
+            toast('Some changes were not saved (' + friendly(res.error) + ').', 'err');
+            continue;
+          }
+          chunk.forEach(function (it) { var q = st.queue[it.t + '|' + it.k]; if (q && q.v === it.v) delete st.queue[it.t + '|' + it.k]; });
+          saveCache(); setStatus();
+        }
+      }
+      return repull;
+    }
+    async function fetchAll(t, since) {
+      var out = [], from = 0, page = 1000;
+      for (;;) {
+        var q = SB.from(t).select(COLS[t]);
+        if (since) q = q.gt('updated_at', new Date(Date.parse(since) - 5000).toISOString());
+        q = q.order('updated_at', { ascending: true });
+        PK[t].split(',').forEach(function (c) { q = q.order(c, { ascending: true }); });
+        var res = await q.range(from, from + page - 1);
+        if (res.error) { if (isNetwork(res)) throw netErr(); throw new Error(res.error.message); }
+        out = out.concat(res.data || []);
+        if (!res.data || res.data.length < page) break;
+        from += page;
+      }
+      return out;
+    }
+    async function pullNow(full) {
+      var changed = false;
+      var pr = await SB.from('profiles').select('id,role,name,email,class_id').order('id');
+      if (pr.error) { if (isNetwork(pr)) throw netErr(); throw new Error(pr.error.message); }
+      var profs = (pr.data || []).map(function (p) { return { id: p.id, role: p.role, name: p.name, email: p.email, class_id: p.class_id }; });
+      if (stable(profs) !== stable(st.profiles)) { st.profiles = profs; changed = true; }
+      var own = profs.filter(function (p) { return p.id === U.id; })[0];
+      if (!own) { var e = new Error('no-access'); e.noAccess = true; throw e; }
+      if (stable(own) !== stable(st.profile)) { st.profile = own; U.role = own.role; changed = true; full = true; }
+      for (var i = 0; i < DB.length; i++) {
+        var t = DB[i];
+        if (!readable(t)) { if (Object.keys(st.rows[t]).length) { st.rows[t] = {}; changed = true; } continue; }
+        var isFull = full || !st.since[t];
+        var rows = await fetchAll(t, isFull ? null : st.since[t]);
+        var seen = {}, maxU = isFull ? null : st.since[t];
+        rows.forEach(function (r) {
+          var c = canon(t, r), k = keyOf(t, c);
+          seen[k] = 1;
+          if (!maxU || r.updated_at > maxU) maxU = r.updated_at;
+          if (st.queue[t + '|' + k]) return;
+          if (!st.rows[t][k] || stable(st.rows[t][k]) !== stable(c)) { st.rows[t][k] = c; changed = true; }
+        });
+        if (isFull) Object.keys(st.rows[t]).forEach(function (k) { if (!seen[k] && !st.queue[t + '|' + k]) { delete st.rows[t][k]; changed = true; } });
+        st.since[t] = maxU || st.since[t] || null;
+      }
+      return changed;
+    }
+    function handleErr(e) {
+      if (e && e.noAccess) { setStatus('error', 'Your account has no access.'); if (onNoAccess) onNoAccess(); return; }
+      if (e && e.network) setStatus('offline', '');
+      else { console.warn(e); setStatus('error', (e && e.message) || 'Sync problem'); }
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(function () { sync(false); }, 20000);
+    }
+    function sync(full) {
+      if (!U || !SB) return Promise.resolve(false);
+      return run(async function () {
+        if (!U) return false;
+        if (navigator.onLine === false) { setStatus('offline'); return false; }
+        setStatus('syncing');
+        try {
+          var repull = await flushNow();
+          var changed = await pullNow(full || repull || !st.lastSync);
+          if (pendingCount()) await flushNow();
+          var firstTime = !st.firstSyncDone;
+          st.firstSyncDone = true; st.lastSync = new Date().toISOString(); lastPull = Date.now();
+          saveCache();
+          setStatus('online', '');
+          if (changed || firstTime) notify('remote');
+          return changed;
+        } catch (e) { handleErr(e); return false; }
+      });
+    }
+    function flush() {
+      if (!U || !SB) return Promise.resolve();
+      return run(async function () {
+        if (!U || !pendingCount()) { setStatus(); return; }
+        if (navigator.onLine === false) { setStatus('offline'); return; }
+        setStatus('syncing');
+        try { var repull = await flushNow(); setStatus('online', ''); if (repull) schedulePull(0); }
+        catch (e) { handleErr(e); }
+      });
+    }
+    function scheduleFlush(ms) { clearTimeout(flushTimer); flushTimer = setTimeout(flush, ms || 0); }
+    function schedulePull(ms) { clearTimeout(pullTimer); pullTimer = setTimeout(function () { sync(false); }, ms || 0); }
+    function start() {
+      stop();
+      if (!U || !SB) return;
+      try {
+        channel = SB.channel('lw-sync-' + U.id)
+          .on('postgres_changes', { event: '*', schema: 'public' }, function () { schedulePull(700); })
+          .subscribe(function (s) { rt = s; setStatus(); });
+      } catch (e) { console.warn('Realtime unavailable, polling instead', e); }
+      pollTimer = setInterval(function () {
+        if (!U || document.visibilityState === 'hidden') return;
+        if (rt !== 'SUBSCRIBED' || Date.now() - lastPull > 5 * 60000 || pendingCount()) sync(false);
+      }, 30000);
+      sync(true);
+    }
+    function stop() {
+      clearTimeout(flushTimer); clearTimeout(pullTimer); clearTimeout(retryTimer); clearInterval(pollTimer);
+      if (channel && SB) { try { SB.removeChannel(channel); } catch (e) { /* ignore */ } }
+      channel = null; rt = '';
+    }
+
+    /* ---------- backup / legacy (v1) data ---------- */
     function exportAll() {
       var data = {};
-      TABLES.forEach(function (t) {
-        var raw = localStorage.getItem(PREFIX + t);
-        if (raw != null) { try { data[t] = JSON.parse(raw); } catch (e) { /* skip corrupt */ } }
-      });
-      return { app: 'littlewings-dashboard', version: 1, appVersion: APP_VERSION, exportedAt: new Date().toISOString(), data: data };
+      ['settings', 'students', 'attendance', 'payments', 'enquiries', 'staff'].forEach(function (t) { data[t] = collection(t); });
+      return { app: 'littlewings-dashboard', version: 2, appVersion: APP_VERSION, exportedAt: new Date().toISOString(), data: data };
     }
     function validateBackup(obj) {
       if (!obj || typeof obj !== 'object' || obj.app !== 'littlewings-dashboard' || !obj.data || typeof obj.data !== 'object') {
         throw new Error('This file is not a Little Wings dashboard backup.');
       }
       var d = obj.data;
-      ['users', 'students', 'payments', 'enquiries', 'staff'].forEach(function (t) {
+      ['students', 'payments', 'enquiries', 'staff'].forEach(function (t) {
         if (d[t] != null && !Array.isArray(d[t])) throw new Error('Backup is damaged (' + t + ').');
       });
       if (d.attendance != null && (typeof d.attendance !== 'object' || Array.isArray(d.attendance))) throw new Error('Backup is damaged (attendance).');
-      if (!d.auth || !d.auth.hash || !d.auth.salt) throw new Error('Backup has no admin PIN — cannot restore.');
       return true;
     }
-    function importAll(obj) {
-      validateBackup(obj);
-      TABLES.forEach(function (t) { localStorage.removeItem(PREFIX + t); });
-      TABLES.forEach(function (t) {
-        if (obj.data[t] !== undefined) localStorage.setItem(PREFIX + t, JSON.stringify(obj.data[t]));
+    function legacyData() {
+      var d = {}, any = false;
+      ['settings', 'students', 'attendance', 'payments', 'enquiries', 'staff'].forEach(function (t) {
+        var raw = null;
+        try { raw = localStorage.getItem(LEGACY + t); } catch (e) { /* ignore */ }
+        if (raw != null) { try { d[t] = JSON.parse(raw); any = true; } catch (e) { /* skip corrupt */ } }
       });
+      return any ? { app: 'littlewings-dashboard', version: 1, exportedAt: new Date().toISOString(), data: d } : null;
     }
-    function clearAll() {
-      var keys = [];
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (k && k.indexOf(PREFIX) === 0) keys.push(k);
-      }
-      keys.forEach(function (k) { localStorage.removeItem(k); });
+    function hasLegacy() {
+      var o = legacyData(); if (!o) return false;
+      var d = o.data;
+      return !!(asArray(d.students).length || asArray(d.payments).length || asArray(d.enquiries).length || asArray(d.staff).length || Object.keys(asObject(d.attendance)).length);
     }
-    function usageBytes() {
-      var n = 0;
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (k && k.indexOf(PREFIX) === 0) n += (k.length + (localStorage.getItem(k) || '').length) * 2;
-      }
-      return n;
-    }
-    function rawGet(key) { try { return localStorage.getItem(PREFIX + key); } catch (e) { return null; } }
-    function rawSet(key, v) { try { localStorage.setItem(PREFIX + key, v); } catch (e) { /* ignore */ } }
-    function rawDel(key) { try { localStorage.removeItem(PREFIX + key); } catch (e) { /* ignore */ } }
+    function usageBytes() { try { return ((localStorage.getItem(cacheKey()) || '').length) * 2; } catch (e) { return 0; } }
+    function rawGet(key) { try { return localStorage.getItem(LEGACY + key); } catch (e) { return null; } }
+    function rawSet(key, v) { try { localStorage.setItem(LEGACY + key, v); } catch (e) { /* ignore */ } }
+    function rawDel(key) { try { localStorage.removeItem(LEGACY + key); } catch (e) { /* ignore */ } }
     function subscribe(fn) { listeners.push(fn); }
-    return { load: load, save: save, exportAll: exportAll, importAll: importAll, validateBackup: validateBackup, clearAll: clearAll, usageBytes: usageBytes, rawGet: rawGet, rawSet: rawSet, rawDel: rawDel, subscribe: subscribe, TABLES: TABLES };
+    function onStatus(fn) { statusListeners.push(fn); }
+    function hasSettingsRow() { return !!st.rows.settings['1']; }
+    return {
+      load: load, save: save, exportAll: exportAll, validateBackup: validateBackup, legacyData: legacyData, hasLegacy: hasLegacy,
+      usageBytes: usageBytes, rawGet: rawGet, rawSet: rawSet, rawDel: rawDel, subscribe: subscribe, onStatus: onStatus,
+      init: init, setProfile: setProfile, profile: function () { return st.profile; }, reset: reset, clearCache: clearCache,
+      start: start, stop: stop, sync: sync, flush: flush, pendingCount: pendingCount, status: function () { return status; },
+      firstSyncDone: function () { return st.firstSyncDone; }, hasSettingsRow: hasSettingsRow,
+      setNoAccessHandler: function (fn) { onNoAccess = fn; }, TABLES: TABLES
+    };
   })();
 
-  // In-memory state (mirrors storage)
+  // In-memory state (mirrors the Store)
   var S = {};
   function asArray(v) { return Array.isArray(v) ? v : []; }
   function asObject(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
   function loadAll() {
     S.settings = Object.assign({}, DEFAULT_SETTINGS, asObject(Store.load('settings', {})));
     S.settings.classTeachers = asObject(S.settings.classTeachers);
-    S.auth = Store.load('auth', null);
     S.users = asArray(Store.load('users', []));
     S.students = asArray(Store.load('students', []));
     S.attendance = asObject(Store.load('attendance', {}));
@@ -289,65 +555,8 @@
     return monthRange(start, end).reduce(function (a, m) { return a + dueFor(s, m); }, 0);
   }
 
-  /* ----- SHA-256 (WebCrypto, with a tiny pure-JS fallback) ----- */
-  function hex(buf) { return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
-  function sha256js(ascii) {
-    function rr(v, a) { return (v >>> a) | (v << (32 - a)); }
-    var mp = Math.pow, maxWord = mp(2, 32), result = '', words = [], bitLen = ascii.length * 8;
-    var hash = [], k = [], primeCounter = 0, isComposite = {}, i, j;
-    for (var cand = 2; primeCounter < 64; cand++) {
-      if (!isComposite[cand]) {
-        for (i = 0; i < 313; i += cand) isComposite[i] = cand;
-        hash[primeCounter] = (mp(cand, 0.5) * maxWord) | 0;
-        k[primeCounter++] = (mp(cand, 1 / 3) * maxWord) | 0;
-      }
-    }
-    hash = hash.slice(0, 8);
-    ascii += '\x80';
-    while (ascii.length % 64 - 56) ascii += '\x00';
-    for (i = 0; i < ascii.length; i++) { j = ascii.charCodeAt(i); words[i >> 2] |= j << ((3 - i) % 4) * 8; }
-    words[words.length] = (bitLen / maxWord) | 0;
-    words[words.length] = bitLen;
-    for (j = 0; j < words.length;) {
-      var w = words.slice(j, j += 16), oldHash = hash;
-      hash = hash.slice(0, 8);
-      for (i = 0; i < 64; i++) {
-        var w15 = w[i - 15], w2 = w[i - 2], a = hash[0], e = hash[4];
-        var t1 = hash[7] + (rr(e, 6) ^ rr(e, 11) ^ rr(e, 25)) + ((e & hash[5]) ^ ((~e) & hash[6])) + k[i] +
-          (w[i] = (i < 16) ? w[i] : (w[i - 16] + (rr(w15, 7) ^ rr(w15, 18) ^ (w15 >>> 3)) + w[i - 7] + (rr(w2, 17) ^ rr(w2, 19) ^ (w2 >>> 10))) | 0);
-        var t2 = (rr(a, 2) ^ rr(a, 13) ^ rr(a, 22)) + ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
-        hash = [(t1 + t2) | 0].concat(hash);
-        hash[4] = (hash[4] + t1) | 0;
-      }
-      for (i = 0; i < 8; i++) hash[i] = (hash[i] + oldHash[i]) | 0;
-    }
-    for (i = 0; i < 8; i++) for (j = 3; j + 1; j--) { var bb = (hash[i] >> (j * 8)) & 255; result += (bb < 16 ? '0' : '') + bb.toString(16); }
-    return result;
-  }
-  function sha256hex(str) {
-    if (window.crypto && window.crypto.subtle && window.TextEncoder) {
-      return window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)).then(hex);
-    }
-    return Promise.resolve(sha256js(str));
-  }
-  function makeSalt() {
-    var a = new Uint8Array(16);
-    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(a);
-    else for (var i = 0; i < 16; i++) a[i] = Math.floor(Math.random() * 256);
-    return hex(a.buffer);
-  }
-  function hashPin(pin, salt) {
-    // A few hundred rounds of salted SHA-256 (slows down casual guessing a little).
-    var h = salt + ':' + pin, i = 0;
-    function step(x) { h = x; i++; return i >= 300 ? h : sha256hex(h + ':' + salt).then(step); }
-    return sha256hex(h).then(step);
-  }
-  function validPinFormat(pin) { return /^\d{4,6}$/.test(pin || ''); }
-  function makePinRecord(pin) { var salt = makeSalt(); return hashPin(pin, salt).then(function (hash) { return { salt: salt, hash: hash, algo: 'sha256x300' }; }); }
-  function checkPin(rec, pin) { if (!rec || !rec.salt) return Promise.resolve(false); return hashPin(pin, rec.salt).then(function (h) { return h === rec.hash; }); }
-
   // expose for tests
-  window.__lw = { sha256js: sha256js, inWords: inWords, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION };
+  window.__lw = { inWords: inWords, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION };
 
   /* =====================================================================
    * UI PRIMITIVES
@@ -460,125 +669,219 @@
   }
 
   /* =====================================================================
-   * SESSION & AUTH SCREENS
+   * SESSION & AUTH SCREENS (Supabase Auth: email + password)
    * ===================================================================== */
   var ME = null;
-  var SESSION_HOURS = 12;
-  function getSession() {
-    try {
-      var s = JSON.parse(Store.rawGet('session') || 'null');
-      if (!s || !s.exp || s.exp < Date.now()) return null;
-      if (s.role === 'admin') return { role: 'admin', name: S.settings.owner || 'Admin' };
-      if (s.role === 'teacher') {
-        var u = S.users.filter(function (x) { return x.id === s.userId; })[0];
-        if (!u) return null;
-        return { role: 'teacher', userId: u.id, name: u.name, classId: u.classId };
-      }
-    } catch (e) { /* ignore */ }
-    return null;
-  }
-  function setSession(role, user) {
-    Store.rawSet('session', JSON.stringify({ role: role, userId: user ? user.id : null, exp: Date.now() + SESSION_HOURS * 3600e3 }));
-  }
-  function logout() {
-    Store.rawDel('session');
-    ME = null;
-    closeModal();
-    location.hash = '';
-    boot();
-  }
   function isAdmin() { return ME && ME.role === 'admin'; }
+  function fnCall(action, payload) {
+    // Calls the lw-admin Edge Function (service key stays on the server).
+    var body = Object.assign({ action: action }, payload || {});
+    var tokenP = SB ? SB.auth.getSession().then(function (r) { return r.data.session ? r.data.session.access_token : null; }) : Promise.resolve(null);
+    return tokenP.then(function (token) {
+      return fetch(CFG.supabaseUrl + '/functions/v1/lw-admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: CFG.supabaseKey, Authorization: 'Bearer ' + (token || CFG.supabaseKey) },
+        body: JSON.stringify(body)
+      });
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (j) {
+        if (!res.ok) throw new Error(j.error || ('Server error ' + res.status));
+        return j;
+      });
+    }, function (err) {
+      if (err && /fetch|network|load failed/i.test(err.message || '')) throw new Error('No internet connection. Please try again when online.');
+      throw err;
+    });
+  }
+  function authErrorText(err) {
+    var m = (err && err.message) || String(err || '');
+    if (/invalid login credentials/i.test(m)) return 'Wrong email or password.';
+    if (/email not confirmed/i.test(m)) return 'This email is not confirmed yet. Ask the admin to check the login.';
+    if (/fetch|network|load failed/i.test(m)) return 'No internet connection. Please try again when online.';
+    if (/rate limit|too many/i.test(m)) return 'Too many attempts. Please wait a few minutes and try again.';
+    if (/should be different/i.test(m)) return 'The new password must be different from the old one.';
+    if (/password/i.test(m) && /least|weak|short/i.test(m)) return 'Password is too weak. Use at least 8 characters.';
+    return m;
+  }
 
   function authCard(inner) {
     return '<div class="auth-wrap"><div class="auth-card">' +
       '<img class="auth-logo" src="assets/logo.jpeg" alt="The Little Wings Play School logo" width="96" height="96">' +
-      '<h1>' + esc(S.settings.schoolName) + '</h1>' + inner + '</div>' +
-      '<p class="auth-foot">Data is stored only on this device · v' + APP_VERSION + '</p></div>';
+      '<h1>' + esc(S.settings.schoolName || DEFAULT_SETTINGS.schoolName) + '</h1>' + inner + '</div>' +
+      '<p class="auth-foot">🔐 Secure sign-in · data saved in the school’s private online database · v' + APP_VERSION + '</p></div>';
   }
-  function pinInput(name, label, auto) {
-    return field(label, '<input name="' + name + '" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="' + (auto || 'off') + '" class="pin" required>');
+  function pwInput(name, label, auto, extra) {
+    return field(label, '<span class="pw-wrap"><input name="' + name + '" type="password" autocomplete="' + (auto || 'current-password') + '" maxlength="72" required>' +
+      '<button type="button" class="pw-toggle" data-act="pw-toggle" aria-label="Show password" title="Show / hide password">👁️</button></span>', extra);
   }
+  function emailInput(name, label, value) {
+    return field(label, '<input name="' + name + '" type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" value="' + esc(value || '') + '" required>');
+  }
+  function validEmail(e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e || ''); }
   function showAuth(html) {
     $('#shell').hidden = true;
     var a = $('#auth-screen');
     a.hidden = false;
     a.innerHTML = html;
-    var f = $('input:not([type=hidden])', a); if (f) f.focus();
+    var f = $('input:not([type=hidden]):not([value])', a) || $('input:not([type=hidden])', a);
+    if (f && window.matchMedia('(min-width: 700px)').matches) f.focus();
   }
+  function showLoading(msg) { showAuth(authCard('<p class="sub">' + esc(msg || 'Loading…') + '</p><div class="spinner" aria-hidden="true"></div>')); }
+  function showConfigError() {
+    showAuth(authCard('<p class="sub">The dashboard could not start.</p><p class="note warn">The online database settings (config.js) or the Supabase library did not load. Check your internet connection and reload the page.</p><button class="btn primary block" onclick="location.reload()">Reload</button>'));
+  }
+
   function showSetup() {
-    showAuth(authCard('<p class="sub">Welcome! Let’s set up your dashboard. 🎉</p>' +
+    showAuth(authCard('<p class="sub">Welcome! Create the <b>admin account</b> for your school. 🎉</p>' +
       '<form id="setup-form" class="form" novalidate>' +
-      field('Admin name', '<input name="owner" maxlength="60" value="' + esc(S.settings.owner) + '" required>') +
-      pinInput('pin', 'Create admin PIN (4–6 digits)', 'new-password') +
-      pinInput('pin2', 'Confirm PIN', 'new-password') +
-      '<p class="note">The PIN locks this dashboard on this device. Keep it safe — it can’t be recovered (only replaced by restoring a backup).</p>' +
-      '<button class="btn primary big block">Create PIN &amp; start</button></form>'));
+      field('Your name', '<input name="owner" maxlength="60" autocomplete="name" value="' + esc(DEFAULT_SETTINGS.owner) + '" required>') +
+      emailInput('email', 'Email (you will sign in with this)') +
+      pwInput('password', 'Create a password (at least 8 characters)', 'new-password') +
+      pwInput('password2', 'Confirm password', 'new-password') +
+      '<p class="note">This first account becomes the admin. After that, sign-ups are closed: teachers get their logins from you in <b>Settings → Teacher logins</b>.</p>' +
+      '<button class="btn primary big block">Create admin account</button>' +
+      '<p class="center small"><button type="button" class="link" data-act="auth-login">I already have an account</button></p></form>'));
     $('#setup-form').addEventListener('submit', function (e) {
       e.preventDefault();
       var f = e.target, fd = new FormData(f);
       clearErrors(f);
-      var pin = String(fd.get('pin') || ''), pin2 = String(fd.get('pin2') || ''), owner = String(fd.get('owner') || '').trim();
-      if (!owner) return fieldError(f, 'owner', 'Please enter a name');
-      if (!validPinFormat(pin)) return fieldError(f, 'pin', 'PIN must be 4 to 6 digits');
-      if (pin !== pin2) return fieldError(f, 'pin2', 'PINs do not match');
-      $('button', f).disabled = true;
-      makePinRecord(pin).then(function (rec) {
-        rec.createdAt = new Date().toISOString();
-        S.auth = rec;
-        S.settings.owner = owner;
-        if (!S.settings.feesStartMonth) S.settings.feesStartMonth = thisMonth();
-        persist('auth', 'settings');
-        setSession('admin');
-        toast('PIN created. Welcome, ' + owner + '!');
+      var owner = String(fd.get('owner') || '').trim(), email = String(fd.get('email') || '').trim().toLowerCase();
+      var pw = String(fd.get('password') || ''), pw2 = String(fd.get('password2') || '');
+      if (owner.length < 2) return fieldError(f, 'owner', 'Please enter your name');
+      if (!validEmail(email)) return fieldError(f, 'email', 'Please enter a valid email');
+      if (pw.length < 8) return fieldError(f, 'password', 'Use at least 8 characters');
+      if (pw !== pw2) return fieldError(f, 'password2', 'Passwords do not match');
+      var btn = $('button.primary', f); btn.disabled = true; btn.textContent = 'Creating…';
+      fnCall('bootstrap', { name: owner, email: email, password: pw }).then(function () {
+        return SB.auth.signInWithPassword({ email: email, password: pw });
+      }).then(function (r) {
+        if (r.error) throw r.error;
+        Store.rawSet('lastEmail', email);
+        toast('Admin account created. Welcome, ' + owner + '!');
+        if (history.replaceState) history.replaceState(null, '', '#/dashboard');
+        boot();
+      }).catch(function (err) {
+        btn.disabled = false; btn.textContent = 'Create admin account';
+        if (/already exists/i.test(err.message) && /admin/i.test(err.message)) { toast('An admin account already exists. Please sign in.', 'err'); showLogin(); return; }
+        fieldError(f, 'email', authErrorText(err));
+      });
+    });
+  }
+
+  function showLogin(opts) {
+    opts = opts || {};
+    showAuth(authCard('<p class="sub">Sign in to open the dashboard</p>' +
+      '<form id="login-form" class="form" novalidate>' +
+      emailInput('email', 'Email', Store.rawGet('lastEmail') || '') +
+      pwInput('password', 'Password', 'current-password') +
+      (opts.message ? '<p class="note">' + esc(opts.message) + '</p>' : '') +
+      '<button class="btn primary big block">Sign in 🔓</button>' +
+      '<p class="center small"><button type="button" class="link" data-act="auth-forgot">Forgot password?</button></p>' +
+      '<p id="setup-hint" class="note center" hidden>No admin account exists yet. <button type="button" class="link strong" data-act="auth-setup">Create the admin account</button></p>' +
+      '</form>'));
+    var f = $('#login-form');
+    f.addEventListener('submit', function (e) {
+      e.preventDefault();
+      clearErrors(f);
+      var fd = new FormData(f), email = String(fd.get('email') || '').trim().toLowerCase(), pw = String(fd.get('password') || '');
+      if (!validEmail(email)) return fieldError(f, 'email', 'Please enter your email');
+      if (!pw) return fieldError(f, 'password', 'Please enter your password');
+      var btn = $('button.primary', f); btn.disabled = true; btn.textContent = 'Signing in…';
+      SB.auth.signInWithPassword({ email: email, password: pw }).then(function (r) {
+        btn.disabled = false; btn.textContent = 'Sign in 🔓';
+        if (r.error) { $('[name=password]', f).value = ''; return fieldError(f, 'password', authErrorText(r.error)); }
+        Store.rawSet('lastEmail', email);
+        if (history.replaceState) history.replaceState(null, '', '#/dashboard');
+        boot();
+      }).catch(function (err) { btn.disabled = false; btn.textContent = 'Sign in 🔓'; fieldError(f, 'password', authErrorText(err)); });
+    });
+    if (!opts.skipStatus) {
+      fnCall('status').then(function (r) {
+        if (r && r.adminExists === false && $('#login-form')) { showSetup(); }
+      }).catch(function () { /* offline: keep the login form */ });
+    }
+  }
+  function showForgot() {
+    showAuth(authCard('<p class="sub">Reset your password</p><form id="forgot-form" class="form" novalidate>' +
+      emailInput('email', 'Your email', Store.rawGet('lastEmail') || '') +
+      '<p class="note">We will email you a link to set a new password. Teachers can also ask the admin to set a new password from Settings.</p>' +
+      '<button class="btn primary big block">Send reset link</button>' +
+      '<p class="center small"><button type="button" class="link" data-act="auth-login">Back to sign in</button></p></form>'));
+    var f = $('#forgot-form');
+    f.addEventListener('submit', function (e) {
+      e.preventDefault(); clearErrors(f);
+      var email = String(new FormData(f).get('email') || '').trim().toLowerCase();
+      if (!validEmail(email)) return fieldError(f, 'email', 'Please enter a valid email');
+      var btn = $('button.primary', f); btn.disabled = true;
+      SB.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname }).then(function (r) {
+        btn.disabled = false;
+        if (r.error) return fieldError(f, 'email', authErrorText(r.error));
+        showLogin({ skipStatus: true, message: 'If this email has an account, a reset link is on its way. Check your inbox and spam folder, then open the link on this device.' });
+      }).catch(function (err) { btn.disabled = false; fieldError(f, 'email', authErrorText(err)); });
+    });
+  }
+  function showSetNewPassword() {
+    showAuth(authCard('<p class="sub">Set a new password</p><form id="newpw-form" class="form" novalidate>' +
+      pwInput('password', 'New password (at least 8 characters)', 'new-password') + pwInput('password2', 'Confirm new password', 'new-password') +
+      '<button class="btn primary big block">Save new password</button></form>'));
+    var f = $('#newpw-form');
+    f.addEventListener('submit', function (e) {
+      e.preventDefault(); clearErrors(f);
+      var fd = new FormData(f), pw = String(fd.get('password') || ''), pw2 = String(fd.get('password2') || '');
+      if (pw.length < 8) return fieldError(f, 'password', 'Use at least 8 characters');
+      if (pw !== pw2) return fieldError(f, 'password2', 'Passwords do not match');
+      var btn = $('button.primary', f); btn.disabled = true;
+      SB.auth.updateUser({ password: pw }).then(function (r) {
+        btn.disabled = false;
+        if (r.error) return fieldError(f, 'password', authErrorText(r.error));
+        RECOVERY = false;
+        toast('Password updated 🔐');
+        if (history.replaceState) history.replaceState(null, '', '#/dashboard');
         boot();
       });
     });
   }
-  function lockState() { try { return JSON.parse(Store.rawGet('lock') || 'null') || { fails: 0, until: 0 }; } catch (e) { return { fails: 0, until: 0 }; } }
-  function showLogin() {
-    var who = [{ value: 'admin', label: 'Admin · ' + (S.settings.owner || 'Owner') }].concat(S.users.slice().sort(byName).map(function (u) {
-      return { value: u.id, label: 'Teacher · ' + u.name + ' (' + className(u.classId) + ')' };
-    }));
-    var last = Store.rawGet('lastUser') || 'admin';
-    showAuth(authCard('<p class="sub">Enter your PIN to open the dashboard</p>' +
-      '<form id="login-form" class="form" novalidate>' +
-      field('Who are you?', '<select name="who">' + options(who, last) + '</select>') +
-      pinInput('pin', 'PIN', 'current-password') +
-      '<p id="lock-msg" class="note warn" hidden></p>' +
-      '<button class="btn primary big block">Unlock 🔓</button>' +
-      '<details class="forgot"><summary>Forgot PIN?</summary><p>Teachers: ask the admin to reset your PIN in Settings. Admin: the PIN can’t be recovered. You can restore a backup file (which contains its own PIN) or clear this site’s browser data to start fresh (this erases everything on this device).</p></details>' +
-      '</form>'));
-    var f = $('#login-form');
-    $('[name=pin]', f).focus();
-    f.addEventListener('submit', function (e) {
-      e.preventDefault();
-      clearErrors(f);
-      var fd = new FormData(f), whoV = String(fd.get('who')), pin = String(fd.get('pin') || '');
-      var ls = lockState();
-      if (ls.until > Date.now()) {
-        var secs = Math.ceil((ls.until - Date.now()) / 1000);
-        var lm = $('#lock-msg'); lm.hidden = false; lm.textContent = 'Too many wrong tries. Please wait ' + secs + ' seconds.';
+  function noAccess() {
+    var p = SB ? SB.auth.signOut({ scope: 'local' }) : Promise.resolve();
+    Store.reset(); ME = null;
+    p.catch(function () {}).then(function () { showLogin({ skipStatus: true, message: 'This login has no access to the dashboard (it may have been removed). Please contact the admin.' }); });
+  }
+  function logout() {
+    var uid = ME && ME.userId;
+    ME = null;
+    closeModal();
+    Store.stop();
+    if (uid) Store.clearCache(uid); // don't leave school data on a shared phone
+    Store.reset();
+    UI.drafts = {};
+    location.hash = '';
+    var p = SB ? SB.auth.signOut({ scope: 'local' }) : Promise.resolve();
+    p.catch(function () {}).then(function () { boot(); });
+  }
+  function applyProfile(p) {
+    loadAll();
+    if (!p) { ME = null; return; }
+    ME = p.role === 'admin'
+      ? { role: 'admin', userId: p.id, name: S.settings.owner || p.name || 'Admin', email: p.email }
+      : { role: 'teacher', userId: p.id, name: p.name || p.email || 'Teacher', classId: p.class_id || '', email: p.email };
+  }
+  function startSession(user) {
+    Store.init(user.id);
+    var cached = Store.profile();
+    if (cached) { applyProfile(cached); showShell(); }
+    else showLoading('Loading your dashboard…');
+    SB.from('profiles').select('id,role,name,email,class_id').eq('id', user.id).maybeSingle().then(function (res) {
+      if (res.error) {
+        if (!cached) showAuth(authCard('<p class="sub">Could not reach the online database.</p><p class="note warn">' + esc(authErrorText(res.error)) + '</p><button class="btn primary block" data-act="auth-retry">Try again</button><p class="center small"><button type="button" class="link" data-act="logout">Sign out</button></p>'));
+        else Store.start();
         return;
       }
-      if (!validPinFormat(pin)) return fieldError(f, 'pin', 'Enter your 4–6 digit PIN');
-      var user = whoV === 'admin' ? null : S.users.filter(function (u) { return u.id === whoV; })[0];
-      var rec = whoV === 'admin' ? S.auth : user;
-      $('button.primary', f).disabled = true;
-      checkPin(rec, pin).then(function (ok) {
-        $('button.primary', f).disabled = false;
-        if (!ok) {
-          ls.fails = (ls.fails || 0) + 1;
-          if (ls.fails >= 5) ls.until = Date.now() + Math.min(600, 30 * Math.pow(2, ls.fails - 5)) * 1000;
-          Store.rawSet('lock', JSON.stringify(ls));
-          $('[name=pin]', f).value = '';
-          return fieldError(f, 'pin', 'Wrong PIN. Please try again.' + (ls.fails >= 3 ? ' (' + ls.fails + ' wrong tries)' : ''));
-        }
-        Store.rawDel('lock');
-        Store.rawSet('lastUser', whoV);
-        setSession(whoV === 'admin' ? 'admin' : 'teacher', user);
-        if (history.replaceState) history.replaceState(null, '', '#/dashboard');
-        boot();
-      });
+      if (!res.data) return noAccess();
+      var wasShown = !!ME;
+      Store.setProfile(res.data);
+      applyProfile(res.data);
+      if (!wasShown) showShell(); else { showShell(); }
+      Store.start();
     });
   }
 
@@ -641,11 +944,14 @@
     if (routeId !== UI.lastRoute) { window.scrollTo(0, 0); UI.lastRoute = routeId; }
   }
   function boot() {
-    loadAll();
-    if (!S.auth || !S.auth.hash) { ME = null; return showSetup(); }
-    ME = getSession();
-    if (!ME) return showLogin();
-    showShell();
+    if (!SB) { loadAll(); return showConfigError(); }
+    if (RECOVERY) { loadAll(); return showSetNewPassword(); }
+    SB.auth.getSession().then(function (r) {
+      var sess = r && r.data && r.data.session;
+      if (RECOVERY) { loadAll(); return showSetNewPassword(); }
+      if (!sess) { Store.reset(); ME = null; loadAll(); return showLogin(); }
+      startSession(sess.user);
+    });
   }
 
   /* =====================================================================
@@ -717,7 +1023,8 @@
         '<li><a href="#/staff">Add your staff</a> and pick class teachers</li>' +
         '<li><a href="#/classes">Add students</a> to Toddlers, Nursery, LKG and UKG</li>' +
         '<li><a href="#/settings">Create teacher logins</a> so teachers can mark attendance on their phones</li>' +
-        '<li><a href="#/settings">Download a backup</a> regularly — data lives only on this device</li></ol>' +
+        (Store.hasLegacy() ? '<li><a href="#/settings">Import old data</a> saved on this device by the old version</li>' : '') +
+        '<li><a href="#/settings">Download a backup</a> now and then — data is saved online and shared across devices</li></ol>' +
         '<div class="row gap"><button class="btn primary" data-act="student-add">➕ Add first student</button><button class="btn ghost" data-act="enq-add">📝 Add an enquiry</button></div></section>';
     }
 
@@ -1109,7 +1416,9 @@
       }).join('') + '</tbody></table></div>';
   }
   function nextReceiptNo() {
-    var seq = Math.max(1, parseInt(S.settings.receiptSeq, 10) || 1);
+    // Never reuse a number, even if two devices recorded payments while offline.
+    var maxUsed = S.payments.reduce(function (m, p) { return Math.max(m, parseInt(p.seq, 10) || 0); }, 0);
+    var seq = Math.max(1, parseInt(S.settings.receiptSeq, 10) || 1, maxUsed + 1);
     return { seq: seq, no: (S.settings.receiptPrefix || 'LW').trim() + '-' + String(seq).padStart(4, '0') };
   }
   function openPaymentForm(studentId, month) {
@@ -1376,12 +1685,13 @@
    * SETTINGS (admin) / ACCOUNT (teacher)
    * ===================================================================== */
   function viewSettings() {
-    var lockNote = '<div class="callout warn"><b>🔐 About the PIN lock</b><p>The PIN is a convenience lock to keep casual eyes out. It is stored as a salted SHA-256 hash, but because all data lives inside this browser, anyone with access to this device and some technical skill could read it. Don’t share the device unlocked, and keep backups somewhere safe.</p></div>';
+    var secNote = '<div class="callout"><b>🔐 Security</b><p>Everyone signs in with their own email and password. Data is kept in the school’s private Supabase database (Mumbai). Database rules (Row Level Security) are enforced on the server: teachers can read only their own class’s students and attendance, and cannot read fees, payments, enquiries or staff salaries at all. This device keeps an offline copy of what you are allowed to see; signing out removes it. Use a strong password and don’t share logins.</p></div>';
+    var pwForm = '<form class="form narrow" data-form="my-password" novalidate>' + pwInput('password', 'New password (at least 8 characters)', 'new-password') + pwInput('password2', 'Confirm new password', 'new-password') +
+      '<button class="btn primary">Change password</button></form>';
     if (!isAdmin()) {
-      return '<section class="card"><h2>👤 My account</h2><p>' + esc(ME.name) + ' · Teacher, ' + esc(className(ME.classId)) + '</p></section>' +
-        '<section class="card"><h3>Change my PIN</h3><form class="form narrow" data-form="my-pin" novalidate>' + pinInput('cur', 'Current PIN', 'current-password') + pinInput('pin', 'New PIN (4–6 digits)', 'new-password') + pinInput('pin2', 'Confirm new PIN', 'new-password') +
-        '<button class="btn primary">Update PIN</button></form></section>' + lockNote +
-        '<div class="callout"><b>📱 Data on this device</b><p>Attendance you mark here is saved only in this phone’s browser. The admin sees it only on this same device unless a backup is shared. Ask the admin how your school shares data.</p></div>';
+      return '<section class="card"><h2>👤 My account</h2><p><b>' + esc(ME.name) + '</b> · Teacher, ' + esc(className(ME.classId)) + '<br><small class="muted">' + esc(ME.email || '') + '</small></p></section>' +
+        '<section class="card"><h3>🔐 Change my password</h3>' + pwForm + '</section>' + secNote +
+        '<div class="callout"><b>☁️ Saved online</b><p>Attendance and student details you save here go to the school’s online database, so the admin sees them on their phone too. If you are offline, changes wait on this phone and upload automatically when the internet is back (watch the badge at the top).</p></div>' + syncInfoHTML();
     }
     var st = S.settings;
     var html = '<section class="card"><h2>🏫 School details</h2><form class="form" data-form="school" novalidate><div class="grid2">' +
@@ -1398,27 +1708,40 @@
       return field(c.emoji + ' ' + c.name, '<select name="' + c.id + '">' + options(S.staff.filter(function (s) { return s.status !== 'Left'; }).sort(byName).map(function (s) { return { value: s.id, label: s.name + ' (' + s.role + ')' }; }), st.classTeachers[c.id], 'Not assigned') + '</select>');
     }).join('') + '</div><button class="btn primary">Save class teachers</button></form>' : '<p class="muted">Add staff first on the <a href="#/staff">Staff</a> page, then pick a class teacher for each class here.</p>') + '</section>';
 
-    html += '<section class="card"><h2>📱 Teacher logins</h2><p class="muted">Teachers can see only their class’s students and attendance — no fees, staff or settings.</p>' +
+    html += '<section class="card"><h2>📱 Teacher logins</h2><p class="muted">Each teacher signs in with their own email and password on any phone. Teachers see only their class’s students and attendance — no fees, enquiries, staff or settings.</p>' +
       (S.users.length ? '<ul class="mini-list">' + S.users.slice().sort(byName).map(function (u) {
-        return '<li><span><b>' + esc(u.name) + '</b><small>' + esc(className(u.classId)) + '</small></span><span><button class="btn small ghost" data-act="user-reset" data-id="' + esc(u.id) + '">Reset PIN</button> <button class="icon-btn" data-act="user-del" data-id="' + esc(u.id) + '" title="Remove login" aria-label="Remove">🗑️</button></span></li>';
+        return '<li><span><b>' + esc(u.name) + '</b><small>' + esc(className(u.classId)) + ' · ' + esc(u.email) + '</small></span><span class="row gap"><button class="btn small ghost" data-act="user-edit" data-id="' + esc(u.id) + '">Edit</button><button class="btn small ghost" data-act="user-reset" data-id="' + esc(u.id) + '">New password</button><button class="icon-btn" data-act="user-del" data-id="' + esc(u.id) + '" title="Remove login" aria-label="Remove login for ' + esc(u.name) + '">🗑️</button></span></li>';
       }).join('') + '</ul>' : '<p class="muted">No teacher logins yet.</p>') +
       '<details class="add-box"' + (S.users.length ? '' : ' open') + '><summary>➕ Add teacher login</summary><form class="form" data-form="add-user" novalidate><div class="grid2">' +
-      field('Teacher name *', '<input name="name" maxlength="60" list="staff-names" required>') + '<datalist id="staff-names">' + S.staff.map(function (s) { return '<option value="' + esc(s.name) + '">'; }).join('') + '</datalist>' +
+      field('Teacher name *', '<input name="name" maxlength="60" list="staff-names" autocomplete="off" required>') + '<datalist id="staff-names">' + S.staff.map(function (s) { return '<option value="' + esc(s.name) + '">'; }).join('') + '</datalist>' +
       field('Class *', '<select name="classId" required>' + options(classOptions(), '', 'Select class') + '</select>') +
-      pinInput('pin', 'PIN (4–6 digits) *', 'new-password') + pinInput('pin2', 'Confirm PIN *', 'new-password') +
-      '</div><button class="btn primary">Create login</button></form></details></section>';
+      field('Teacher’s email *', '<input name="email" type="email" inputmode="email" autocapitalize="none" spellcheck="false" maxlength="120" autocomplete="off" required>') +
+      field('Temporary password *', '<span class="pw-wrap"><input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required><button type="button" class="pw-toggle" data-act="pw-toggle" aria-label="Show password">👁️</button></span>', '<small class="hint">At least 8 characters. <button type="button" class="link" data-act="pw-generate">Suggest one</button></small>') +
+      '</div><p class="note">Share the email and temporary password with the teacher (for example on WhatsApp). They can change it in Settings → My account.</p><button class="btn primary">Create login</button></form></details></section>';
 
-    html += '<section class="card"><h2>🔐 Admin PIN</h2><form class="form narrow" data-form="admin-pin" novalidate>' + pinInput('cur', 'Current PIN', 'current-password') + pinInput('pin', 'New PIN (4–6 digits)', 'new-password') + pinInput('pin2', 'Confirm new PIN', 'new-password') +
-      '<button class="btn primary">Change PIN</button></form>' + lockNote + '</section>';
+    html += '<section class="card"><h2>🔐 My password</h2><p class="muted small">Signed in as ' + esc(ME.email || '') + '</p>' + pwForm + '</section>' + secNote;
 
     var kb = (Store.usageBytes() / 1024).toFixed(1);
-    html += '<section class="card"><h2>💾 Backup &amp; data</h2><div class="callout warn"><b>⚠️ Your data lives only on this device</b><p>Everything is saved in this browser (localStorage) on this device only. It is <b>not</b> uploaded anywhere. Clearing browser data, using private/incognito mode, or losing the phone will lose it. Other devices will not see it. <b>Download a backup regularly</b> (e.g. every Friday) and keep it in Google Drive or email. Restore it here or on another device.</p></div>' +
-      '<p class="muted small">Using about ' + kb + ' KB on this device · ' + S.students.length + ' students · ' + S.payments.length + ' payments · ' + Object.keys(S.attendance).length + ' attendance days.' + (st.lastBackup ? ' Last backup: ' + fmtDate(st.lastBackup.slice(0, 10)) + '.' : ' No backup taken yet.') + '</p>' +
+    html += '<section class="card"><h2>💾 Backup &amp; data</h2><div class="callout"><b>☁️ Your data is saved online</b><p>Everything is saved in the school’s private online database and shows on every phone where you or your teachers sign in. This phone also keeps an offline copy (about ' + kb + ' KB), so you can keep working without internet; changes upload when you are back online. It is still wise to <b>download a backup</b> every month and keep it in Google Drive or email.</p></div>' +
+      '<p class="muted small">' + S.students.length + ' students · ' + S.payments.length + ' payments · ' + Object.keys(S.attendance).length + ' attendance days · ' + S.enquiries.length + ' enquiries · ' + S.staff.length + ' staff.' + (st.lastBackup ? ' Last backup: ' + fmtDate(st.lastBackup.slice(0, 10)) + '.' : ' No backup taken yet.') + '</p>' +
+      syncInfoHTML() +
       '<div class="row gap wrap"><button class="btn primary" data-act="backup">⬇️ Download backup (JSON)</button><label class="btn ghost file-btn">⬆️ Restore from backup<input type="file" accept=".json,application/json" data-change="restore" hidden></label></div>' +
-      '<h3>Export to Excel (CSV)</h3><div class="row gap wrap">' + ['students', 'attendance', 'payments', 'enquiries', 'staff'].map(function (t) { return '<button class="btn small ghost" data-act="csv" data-t="' + t + '">📄 ' + cap(t) + '</button>'; }).join('') + '</div>' +
-      '<details class="danger-zone"><summary>Danger zone</summary><p>Erase all dashboard data from this device (students, attendance, fees, enquiries, staff, logins and PINs). Download a backup first.</p><button class="btn danger" data-act="erase">Erase everything on this device</button></details></section>';
-    html += '<p class="muted small center">The Little Wings Dashboard v' + APP_VERSION + ' · Works offline · Times in India Standard Time</p>';
+      '<p class="muted small">Restoring adds the backup’s records to the online database and updates records with the same ID. It does not delete anything.</p>';
+    if (Store.hasLegacy()) {
+      var lg = Store.legacyData().data, imp = Store.rawGet('legacyImportedAt');
+      html += '<div class="callout warn"><b>📥 Old data on this device</b><p>This browser still has data from the old version of the dashboard (saved only on this device): ' +
+        asArray(lg.students).length + ' students, ' + asArray(lg.payments).length + ' payments, ' + Object.keys(asObject(lg.attendance)).length + ' attendance days, ' + asArray(lg.enquiries).length + ' enquiries, ' + asArray(lg.staff).length + ' staff.' +
+        (imp ? ' <b>Already imported on ' + esc(fmtDate(imp.slice(0, 10))) + '.</b>' : '') + '</p><button class="btn primary" data-act="import-legacy">' + (imp ? 'Import again' : 'Import this device’s old local data into the cloud') + '</button></div>';
+    }
+    html += '<h3>Export to Excel (CSV)</h3><div class="row gap wrap">' + ['students', 'attendance', 'payments', 'enquiries', 'staff'].map(function (t) { return '<button class="btn small ghost" data-act="csv" data-t="' + t + '">📄 ' + cap(t) + '</button>'; }).join('') + '</div>' +
+      '<details class="danger-zone"><summary>This device</summary><p>Remove this phone’s offline copy and sign out. Online data is not affected. Unsynced changes on this phone would be lost.</p><button class="btn danger" data-act="erase">Clear this device &amp; sign out</button></details></section>';
+    html += '<p class="muted small center">The Little Wings Dashboard v' + APP_VERSION + ' · Times in India Standard Time</p>';
     return html;
+  }
+  function syncInfoHTML() {
+    var s = Store.status();
+    return '<p class="muted small">☁️ ' + (s.lastSync ? 'Last synced ' + esc(new Intl.DateTimeFormat('en-IN', { timeZone: TZ, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(s.lastSync))) + ' IST' : 'Not synced yet') +
+      (s.pending ? ' · <b>' + s.pending + ' change' + (s.pending === 1 ? '' : 's') + ' waiting to upload</b>' : ' · all changes uploaded') + ' · <button type="button" class="link" data-act="sync-retry">Sync now</button></p>';
   }
 
   var FORMS = {
@@ -1442,37 +1765,24 @@
       render();
     },
     'add-user': function (f, fd) {
-      var name = String(fd.get('name') || '').trim(), cid = String(fd.get('classId') || ''), pin = String(fd.get('pin') || ''), pin2 = String(fd.get('pin2') || '');
+      var name = String(fd.get('name') || '').trim(), cid = String(fd.get('classId') || ''), email = String(fd.get('email') || '').trim().toLowerCase(), pw = String(fd.get('password') || '');
       if (name.length < 2) return fieldError(f, 'name', 'Enter the teacher’s name');
-      if (S.users.some(function (u) { return u.name.toLowerCase() === name.toLowerCase(); })) return fieldError(f, 'name', 'A login with this name already exists');
       if (!CLASS_BY_ID[cid]) return fieldError(f, 'classId', 'Choose a class');
-      if (!validPinFormat(pin)) return fieldError(f, 'pin', 'PIN must be 4 to 6 digits');
-      if (pin !== pin2) return fieldError(f, 'pin2', 'PINs do not match');
-      return makePinRecord(pin).then(function (rec) {
-        S.users.push(Object.assign({ id: uid(), name: name, classId: cid, createdAt: new Date().toISOString() }, rec));
-        persist('users');
+      if (!validEmail(email)) return fieldError(f, 'email', 'Enter a valid email');
+      if (S.users.some(function (u) { return (u.email || '').toLowerCase() === email; })) return fieldError(f, 'email', 'A login with this email already exists');
+      if (pw.length < 8) return fieldError(f, 'password', 'Use at least 8 characters');
+      return fnCall('create_teacher', { name: name, email: email, password: pw, classId: cid }).then(function () {
         toast('Login created for ' + name + ' (' + className(cid) + ')');
-        render();
-      });
+        return Store.sync(false);
+      }).then(function () { loadAll(); render(); }).catch(function (err) { fieldError(f, 'email', err.message); });
     },
-    'admin-pin': function (f, fd) {
-      var cur = String(fd.get('cur') || ''), pin = String(fd.get('pin') || ''), pin2 = String(fd.get('pin2') || '');
-      if (!validPinFormat(pin)) return fieldError(f, 'pin', 'PIN must be 4 to 6 digits');
-      if (pin !== pin2) return fieldError(f, 'pin2', 'PINs do not match');
-      return checkPin(S.auth, cur).then(function (ok) {
-        if (!ok) return fieldError(f, 'cur', 'Current PIN is wrong');
-        return makePinRecord(pin).then(function (rec) { rec.createdAt = new Date().toISOString(); S.auth = rec; persist('auth'); f.reset(); toast('Admin PIN changed 🔐'); });
-      });
-    },
-    'my-pin': function (f, fd) {
-      var u = S.users.filter(function (x) { return x.id === ME.userId; })[0];
-      var cur = String(fd.get('cur') || ''), pin = String(fd.get('pin') || ''), pin2 = String(fd.get('pin2') || '');
-      if (!u) return;
-      if (!validPinFormat(pin)) return fieldError(f, 'pin', 'PIN must be 4 to 6 digits');
-      if (pin !== pin2) return fieldError(f, 'pin2', 'PINs do not match');
-      return checkPin(u, cur).then(function (ok) {
-        if (!ok) return fieldError(f, 'cur', 'Current PIN is wrong');
-        return makePinRecord(pin).then(function (rec) { Object.assign(u, rec); persist('users'); f.reset(); toast('Your PIN was changed 🔐'); });
+    'my-password': function (f, fd) {
+      var pw = String(fd.get('password') || ''), pw2 = String(fd.get('password2') || '');
+      if (pw.length < 8) return fieldError(f, 'password', 'Use at least 8 characters');
+      if (pw !== pw2) return fieldError(f, 'password2', 'Passwords do not match');
+      return SB.auth.updateUser({ password: pw }).then(function (r) {
+        if (r.error) return fieldError(f, 'password', authErrorText(r.error));
+        f.reset(); toast('Your password was changed 🔐');
       });
     }
   };
@@ -1511,42 +1821,78 @@
     toast('Backup downloaded — keep it somewhere safe');
     render();
   }
+  function cleanId(v) { v = String(v == null ? '' : v); return v && v.length <= 64 ? v : ''; }
+  function mergeData(d) {
+    var c = { students: 0, payments: 0, enquiries: 0, staff: 0, days: 0 };
+    ['students', 'payments', 'enquiries', 'staff'].forEach(function (t) {
+      asArray(d[t]).forEach(function (r) {
+        if (!r || typeof r !== 'object' || !cleanId(r.id)) return;
+        if (t === 'students' && !CLASS_BY_ID[r.classId]) return;
+        var rec = JSON.parse(JSON.stringify(r)); rec.id = String(r.id);
+        var idx = -1;
+        for (var i = 0; i < S[t].length; i++) if (S[t][i].id === rec.id) { idx = i; break; }
+        if (idx >= 0) S[t][idx] = Object.assign({}, S[t][idx], rec); else S[t].push(rec);
+        c[t]++;
+      });
+    });
+    var att = asObject(d.attendance);
+    Object.keys(att).forEach(function (day) {
+      if (!isISODate(day)) return;
+      var rec = {};
+      Object.keys(asObject(att[day])).forEach(function (sid) { if (ATT[att[day][sid]]) rec[sid] = att[day][sid]; });
+      if (!Object.keys(rec).length) return;
+      S.attendance[day] = Object.assign({}, S.attendance[day], rec); c.days++;
+    });
+    if (d.settings && typeof d.settings === 'object') {
+      var seq = Math.max(parseInt(S.settings.receiptSeq, 10) || 1, parseInt(d.settings.receiptSeq, 10) || 1);
+      var ct = Object.assign({}, S.settings.classTeachers, asObject(d.settings.classTeachers));
+      S.settings = Object.assign({}, S.settings, d.settings, { receiptSeq: seq, classTeachers: ct });
+    }
+    persist('settings', 'students', 'attendance', 'payments', 'enquiries', 'staff');
+    return c;
+  }
+  function confirmMerge(obj, title, intro) {
+    var d = obj.data, n = function (x) { return Array.isArray(x) ? x.length : 0; };
+    return confirmBox(intro + ' It has ' + n(d.students) + ' students, ' + n(d.payments) + ' payments, ' + Object.keys(asObject(d.attendance)).length + ' attendance days, ' + n(d.enquiries) + ' enquiries and ' + n(d.staff) + ' staff. Records are added to the online database (records with the same ID are updated; nothing is deleted).', { ok: 'Upload to cloud', danger: false, title: title }).then(function (ok) {
+      if (!ok) return false;
+      var c = mergeData(d);
+      UI.drafts = {};
+      toast('Uploading ' + c.students + ' students, ' + c.payments + ' payments, ' + c.days + ' attendance days…');
+      return Store.flush().then(function () {
+        var p = Store.pendingCount();
+        toast(p ? 'Saved on this phone; ' + p + ' changes will upload when online.' : 'Uploaded to the cloud ✅');
+        render();
+        return true;
+      });
+    });
+  }
   function doRestore(input) {
     var file = input.files && input.files[0];
     input.value = '';
-    if (!file) return;
+    if (!file || !isAdmin()) return;
     if (file.size > 25 * 1024 * 1024) { toast('That file is too large to be a backup', 'err'); return; }
     var reader = new FileReader();
     reader.onload = function () {
       var obj;
       try { obj = JSON.parse(String(reader.result)); Store.validateBackup(obj); }
       catch (e) { toast(e instanceof SyntaxError ? 'This file is not valid JSON' : e.message, 'err'); return; }
-      var d = obj.data, n = function (x) { return Array.isArray(x) ? x.length : 0; };
-      confirmBox('Replace ALL data on this device with the backup from ' + fmtDate((obj.exportedAt || '').slice(0, 10)) + '? It has ' + n(d.students) + ' students, ' + n(d.payments) + ' payments, ' + n(d.enquiries) + ' enquiries and ' + n(d.staff) + ' staff. The backup’s PINs will apply, and you will need to log in again.', { ok: 'Replace & restore', title: 'Restore backup?' }).then(function (ok) {
-        if (!ok) return;
-        try { Store.importAll(obj); } catch (e) { toast(e.message, 'err'); return; }
-        Store.rawDel('session');
-        UI.drafts = {};
-        toast('Backup restored. Please log in.');
-        boot();
-      });
+      confirmMerge(obj, 'Restore backup?', 'Restore the backup from ' + fmtDate((obj.exportedAt || '').slice(0, 10)) + '?');
     };
     reader.onerror = function () { toast('Could not read the file', 'err'); };
     reader.readAsText(file);
   }
+  function importLegacy() {
+    if (!isAdmin()) return;
+    var obj = Store.legacyData();
+    if (!obj) { toast('No old data found on this device', 'err'); return; }
+    confirmMerge(obj, 'Import old data?', 'Import the data saved on this device by the old version of the dashboard?').then(function (ok) {
+      if (ok) { Store.rawSet('legacyImportedAt', new Date().toISOString()); render(); }
+    });
+  }
   function doErase() {
-    openModal({
-      title: 'Erase all data?', body: '<form class="form" novalidate><p>This permanently deletes <b>everything</b> on this device, including PINs. It cannot be undone. Type <b>ERASE</b> to confirm.</p>' + field('Type ERASE', '<input name="word" autocomplete="off">') +
-        '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary danger">Erase everything</button></div></form>',
-      onSubmit: function (form, fd) {
-        if (String(fd.get('word') || '').trim() !== 'ERASE') { fieldError(form, 'word', 'Type ERASE in capital letters'); return false; }
-        Store.clearAll();
-        UI.drafts = {};
-        closeModal();
-        location.hash = '';
-        boot();
-        return true;
-      }
+    var p = Store.pendingCount();
+    confirmBox((p ? p + ' change(s) on this phone have not uploaded yet and will be lost. ' : '') + 'Remove this phone’s offline copy and sign out? Online data is not affected.', { ok: 'Clear & sign out', title: 'Clear this device?' }).then(function (ok) {
+      if (ok) logout();
     });
   }
 
@@ -1556,9 +1902,36 @@
   function attr(el, k) { return el.getAttribute('data-' + k); }
   var ACTIONS = {
     'logout': function () {
-      var go = anyDirty() ? confirmBox('You have unsaved attendance. Lock anyway and lose it?', { ok: 'Lock', title: 'Unsaved attendance' }) : Promise.resolve(true);
+      var p = Store.pendingCount();
+      var msg = anyDirty() ? 'You have unsaved attendance. ' : '';
+      if (p) msg += p + ' change(s) have not uploaded yet (no internet?) and will be lost. ';
+      var go = msg ? confirmBox(msg + 'Sign out anyway?', { ok: 'Sign out', title: 'Unsaved changes' }) : Promise.resolve(true);
       go.then(function (ok) { if (ok) { UI.drafts = {}; logout(); } });
     },
+    'auth-login': function () { showLogin({ skipStatus: true }); },
+    'auth-forgot': function () { showForgot(); },
+    'auth-setup': function () { showSetup(); },
+    'auth-retry': function () { boot(); },
+    'pw-toggle': function (el, e) {
+      if (e) e.preventDefault();
+      var inp = el.parentNode.querySelector('input');
+      if (!inp) return;
+      var show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      el.textContent = show ? '🙈' : '👁️';
+      el.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    },
+    'pw-generate': function (el) {
+      var form = el.closest('form'), inp = form && form.querySelector('[name=password]');
+      if (!inp) return;
+      var chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789', a = new Uint32Array(10), out = '';
+      window.crypto.getRandomValues(a);
+      for (var i = 0; i < a.length; i++) out += chars.charAt(a[i] % chars.length);
+      inp.value = out; inp.type = 'text';
+      var t = form.querySelector('[data-act=pw-toggle]'); if (t) t.textContent = '🙈';
+    },
+    'sync-retry': function () { Store.sync(false).then(function () { if (location.hash.indexOf('settings') >= 0) render(); }); },
+    'import-legacy': function () { importLegacy(); },
     'modal-close': closeModal,
     'modal-bg': function (el, e) { if (e.target === el) closeModal(); },
     'student-add': function (el) {
@@ -1638,25 +2011,43 @@
         persist('staff', 'settings'); toast(s.name + ' removed'); render();
       });
     },
+    'user-edit': function (el) {
+      var u = S.users.filter(function (x) { return x.id === attr(el, 'id'); })[0];
+      if (!u) return;
+      openModal({
+        title: 'Edit login · ' + u.name, body: '<form class="form" novalidate>' + field('Teacher name', '<input name="name" maxlength="60" value="' + esc(u.name) + '" required>') +
+          field('Class', '<select name="classId">' + options(classOptions(), u.classId) + '</select>') + '<p class="muted small">Email: ' + esc(u.email) + '</p>' +
+          '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">Save</button></div></form>',
+        onSubmit: function (form, fd) {
+          var name = String(fd.get('name') || '').trim(), cid = String(fd.get('classId') || '');
+          if (name.length < 2) { fieldError(form, 'name', 'Enter the teacher’s name'); return false; }
+          if (!CLASS_BY_ID[cid]) { fieldError(form, 'classId', 'Choose a class'); return false; }
+          return fnCall('update_teacher', { id: u.id, name: name, classId: cid }).then(function () {
+            toast('Login updated'); return Store.sync(false);
+          }).then(function () { loadAll(); render(); return true; }).catch(function (err) { fieldError(form, 'name', err.message); return false; });
+        }
+      });
+    },
     'user-del': function (el) {
       var u = S.users.filter(function (x) { return x.id === attr(el, 'id'); })[0];
       if (!u) return;
-      confirmBox('Remove the login for ' + u.name + '? They will no longer be able to open the dashboard on this device.', { ok: 'Remove login' }).then(function (ok) {
+      confirmBox('Remove the login for ' + u.name + ' (' + u.email + ')? They will no longer be able to sign in on any device.', { ok: 'Remove login' }).then(function (ok) {
         if (!ok) return;
-        S.users = S.users.filter(function (x) { return x.id !== u.id; });
-        persist('users'); toast('Login removed'); render();
+        fnCall('delete_teacher', { id: u.id }).then(function () { toast('Login removed'); return Store.sync(false); })
+          .then(function () { loadAll(); render(); }).catch(function (err) { toast(err.message, 'err'); });
       });
     },
     'user-reset': function (el) {
       var u = S.users.filter(function (x) { return x.id === attr(el, 'id'); })[0];
       if (!u) return;
       openModal({
-        title: 'Reset PIN · ' + u.name, body: '<form class="form" novalidate>' + pinInput('pin', 'New PIN (4–6 digits)', 'new-password') + pinInput('pin2', 'Confirm PIN', 'new-password') + '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">Set new PIN</button></div></form>',
+        title: 'New password · ' + u.name, body: '<form class="form" novalidate>' + pwInput('password', 'New password (at least 8 characters)', 'new-password', '<small class="hint"><button type="button" class="link" data-act="pw-generate">Suggest one</button></small>') +
+          '<p class="muted small">Tell ' + esc(u.name) + ' the new password. Their email stays ' + esc(u.email) + '.</p><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">Set new password</button></div></form>',
         onSubmit: function (form, fd) {
-          var pin = String(fd.get('pin') || ''), pin2 = String(fd.get('pin2') || '');
-          if (!validPinFormat(pin)) { fieldError(form, 'pin', 'PIN must be 4 to 6 digits'); return false; }
-          if (pin !== pin2) { fieldError(form, 'pin2', 'PINs do not match'); return false; }
-          return makePinRecord(pin).then(function (rec) { Object.assign(u, rec); persist('users'); toast('PIN reset for ' + u.name); return true; });
+          var pw = String(fd.get('password') || '');
+          if (pw.length < 8) { fieldError(form, 'password', 'Use at least 8 characters'); return false; }
+          return fnCall('reset_password', { id: u.id, password: pw }).then(function () { toast('New password set for ' + u.name); return true; })
+            .catch(function (err) { fieldError(form, 'password', err.message); return false; });
         }
       });
     },
@@ -1726,12 +2117,60 @@
   window.addEventListener('hashchange', function () { closeModal(); render(); });
   window.addEventListener('beforeunload', function (e) { if (anyDirty()) { e.preventDefault(); e.returnValue = ''; } });
   window.addEventListener('afterprint', function () { $('#print-root').innerHTML = ''; });
-  window.addEventListener('storage', function (e) {
-    // Another tab changed data: reload state so tabs don't overwrite each other.
-    if (e.key && e.key.indexOf('lw_') === 0 && e.key !== 'lw_lock' && e.key !== 'lw_lastUser') { loadAll(); if (ME) { ME = getSession(); if (!ME) boot(); else render(); } }
+  /* ----- cloud sync wiring ----- */
+  var pendingRender = false;
+  function userIsTyping() {
+    var a = document.activeElement;
+    return a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && $('#view') && $('#view').contains(a) && a.type !== 'button';
+  }
+  function refreshFromStore() {
+    if (!ME) return;
+    var prof = Store.profile();
+    applyProfile(prof);
+    if (!ME) return;
+    Object.keys(UI.drafts).forEach(function (k) { if (!UI.drafts[k].dirty) delete UI.drafts[k]; });
+    if (userIsTyping() || $('#confirm-root').innerHTML) { pendingRender = true; return; }
+    pendingRender = false;
+    showShell();
+  }
+  document.addEventListener('focusout', function () { setTimeout(function () { if (pendingRender && !userIsTyping() && !$('#confirm-root').innerHTML) refreshFromStore(); }, 50); });
+  Store.subscribe(function (name, kind) {
+    if (kind !== 'remote' || !ME) return;
+    // First sync for a brand-new school: create the settings row from defaults.
+    if (isAdmin() && Store.firstSyncDone() && !Store.hasSettingsRow()) {
+      loadAll();
+      var p = Store.profile() || {};
+      if (!S.settings.owner || S.settings.owner === DEFAULT_SETTINGS.owner) S.settings.owner = p.name || S.settings.owner;
+      if (!S.settings.feesStartMonth) S.settings.feesStartMonth = thisMonth();
+      persist('settings');
+    }
+    refreshFromStore();
   });
-  // Re-check the session periodically (auto-lock after it expires)
-  setInterval(function () { if (ME && !getSession()) { toast('Session expired — please unlock again'); ME = null; boot(); } }, 60000);
+  Store.setNoAccessHandler(function () { if (ME) { toast('Your login no longer has access', 'err'); noAccess(); } });
+  function renderBadge(s) {
+    var b = $('#sync-badge');
+    if (!b) return;
+    var state = s.state, txt, cls, title;
+    if (state === 'syncing') { txt = 'Syncing…'; cls = 'syncing'; title = 'Saving to the online database'; }
+    else if (state === 'offline') { txt = 'Offline' + (s.pending ? ' · ' + s.pending : ''); cls = 'offline'; title = s.pending ? s.pending + ' change(s) saved on this phone, waiting for internet. Tap to retry.' : 'No internet. Tap to retry.'; }
+    else if (state === 'error') { txt = 'Sync problem'; cls = 'error'; title = (s.message || 'Could not sync') + ' — tap to retry'; }
+    else if (state === 'online') { txt = s.pending ? 'Saving · ' + s.pending : 'Online'; cls = 'online'; title = 'All changes saved online' + (s.realtime === 'SUBSCRIBED' ? ' · live updates on' : ''); }
+    else { txt = 'Connecting…'; cls = 'syncing'; title = 'Connecting to the online database'; }
+    b.className = 'sync-badge ' + cls;
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.innerHTML = '<i></i><span>' + esc(txt) + '</span>' + ((state === 'offline' || state === 'error') ? '<u>Retry</u>' : '');
+  }
+  Store.onStatus(renderBadge);
+  window.addEventListener('online', function () { if (ME) Store.sync(false); });
+  window.addEventListener('offline', function () { if (ME) renderBadge(Object.assign({}, Store.status(), { state: 'offline' })); });
+  document.addEventListener('visibilitychange', function () { if (ME && document.visibilityState === 'visible') Store.sync(false); });
+  if (SB) {
+    SB.auth.onAuthStateChange(function (event) {
+      if (event === 'PASSWORD_RECOVERY') { RECOVERY = true; setTimeout(function () { loadAll(); showSetNewPassword(); }, 0); }
+      else if (event === 'SIGNED_OUT' && ME) { setTimeout(function () { ME = null; Store.reset(); boot(); }, 0); }
+    });
+  }
 
   boot();
 })();

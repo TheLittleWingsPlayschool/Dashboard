@@ -9,12 +9,12 @@
 <title>The Little Wings · Dashboard</title>
 <link rel="icon" href="assets/logo.jpeg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/logo.jpeg">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=2.0.0">
 </head>
 <body>
 <noscript><div class="noscript">This dashboard needs JavaScript turned on in your browser.</div></noscript>
 
-<!-- First-run setup / login -->
+<!-- Sign-in / first admin setup -->
 <div id="auth-screen" hidden></div>
 
 <!-- Main app shell -->
@@ -25,8 +25,9 @@
       <span class="brand-text"><b id="brand-name">The Little Wings</b><small id="page-title">Dashboard</small></span>
     </a>
     <div class="top-actions">
+      <button type="button" id="sync-badge" class="sync-badge syncing" data-act="sync-retry" title="Connecting"><i></i><span>Connecting…</span></button>
       <span id="user-chip" class="user-chip"></span>
-      <button class="btn ghost small" data-act="logout" title="Lock / log out">🔒 <span class="hide-xs">Lock</span></button>
+      <button class="btn ghost small" data-act="logout" title="Sign out">🚪 <span class="hide-xs">Sign out</span></button>
     </div>
   </header>
   <nav id="sidenav" class="sidenav" aria-label="Main"></nav>
@@ -39,6 +40,8 @@
 <div id="toast-root" aria-live="polite"></div>
 <div id="print-root" aria-hidden="true"></div>
 
-<script src="app.js"></script>
+<script src="config.js?v=2.0.0"></script>
+<script src="assets/vendor/supabase-js-2.119.0.js"></script>
+<script src="app.js?v=2.0.0"></script>
 </body>
 </html>
