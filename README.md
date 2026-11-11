@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.6, cloud) + Parents app (v1.4)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.7, cloud) + Parents app (v1.5)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -191,6 +191,22 @@ Parents app v1.4: new **Updates** tab (homework/daily notes), and **More** with 
 
 Database: run `supabase/batch2.sql` after `batch1.sql` (already applied to the project). It adds `class_posts`, `timetables`, `exams`, `marks` (class-scoped RLS), `vans`, `student_docs`, `promotions`, `feedback`, `albums`, `audit_log`, `push_subscriptions`, `push_log` (all with RLS), the three private buckets with storage policies, van/fee-history fee functions, and the parent RPCs `parent_posts`, `parent_timetable`, `parent_report_cards`, `parent_albums`, `parent_feedback_send`, `parent_feedback_list`. `parent_fees()` gains `van_fee`; `parent_payments()` gains `van_fee`.
 
+## New in v2.7 (Batch 2, part B)
+- **Language: English / తెలుగు / हिन्दी.** The dashboard has a language menu in the top bar (and in More); the Parents app has one on the sign-in screen and in More → Language. The choice is saved on the device (and with the login, so it follows the person). Names typed by the school are shown as entered.
+- **Phone alerts (Web Push) for the Parents app.** Parents tap **More → Alerts → Turn on alerts** (Android Chrome; on iPhone the app must first be added to the Home Screen, iOS 16.4+). They get an alert for new notices, homework/daily updates for their child's class, an absent mark today, new gallery albums, and fee reminders (only while fees are shown to parents). Tapping an alert opens the right tab. **Send a test alert** checks the phone. Signing out removes that phone's subscription. Each alert is sent once per item (re-saving does not alert twice).
+- Server: Edge Function `lw-push` (in `supabase/functions/lw-push/`, standard Web Push: RFC 8291 encryption + VAPID, no external service). It checks the login itself, only admin/teacher can trigger alerts (teachers only for their own class), and it reads subscriptions with the server key, never from the browser. Subscriptions are stored in `push_subscriptions` (each parent can only see/delete their own; RLS).
+
+### One-time setup for phone alerts (owner, ~2 minutes)
+Until this is done the apps work normally and show *Phone alerts are not switched on yet*.
+1. Dashboard → **More → Settings → Phone alerts → Create alert keys**. Two keys are shown **once** in your browser (nothing is saved anywhere).
+2. In **supabase.com → project little-wings-dashboard → Edge Functions → Secrets**, add:
+   - `VAPID_PUBLIC_KEY` = the public key
+   - `VAPID_PRIVATE_KEY` = the private key
+   - optional `VAPID_SUBJECT` = `mailto:thelittlewingsplayschool@gmail.com`
+3. Reload Settings: the card turns green. Parents can now turn on alerts.
+
+Never paste the private key into WhatsApp, email, a chat or this repository. If it was ever shared, create a new pair, replace both secrets, and parents simply tap *Turn on alerts* again.
+
 ## Files
 - `index.html`, `style.css`, `app.js` — the app. `Store` at the top of `app.js` is the only data layer (offline copy + sync).
 - `config.js` — Supabase project URL and the **publishable** key (public by design; access is controlled by login + RLS).
@@ -203,6 +219,7 @@ Database: run `supabase/batch2.sql` after `batch1.sql` (already applied to the p
 - `assets/receipt.js`, `assets/receipt.css` — the shared fee receipt (HTML, print to one A4 page, PNG image, WhatsApp text, amount in words), used by both apps. No external libraries.
 - `supabase/batch1.sql` — v2.5: holidays, expenses, salaries, staff attendance, fee reminders, website-enquiry rate-limit log (all RLS), `parent_holidays()`, fee rules (late fee, sibling discount) in `parent_fees()`.
 - `supabase/batch2.sql` — v2.6: homework/updates, timetables, exams & marks, vans and van fee, fee history, admission documents, promotions, feedback, albums, audit log (triggers), push subscriptions (all RLS), private `class-media` / `student-docs` / `gallery` buckets and the new parent RPCs.
+- `supabase/functions/lw-push/index.ts`, `webpush.ts` — v2.7 phone alerts (Web Push) function; the VAPID private key is only an Edge Function secret.
 - `supabase/functions/lw-enquiry/index.ts` — v2.5 public website enquiry form endpoint (insert-only, validated, rate-limited).
 - `assets/xlsx-lite.js` — tiny Excel (.xlsx) writer for backups and reports.
 - `supabase/functions/lw-admin/index.ts` — server function for creating the first admin and managing teacher and parent logins.

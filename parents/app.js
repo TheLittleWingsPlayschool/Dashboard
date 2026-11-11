@@ -1,5 +1,5 @@
 /*!
- * Little Wings Parents (v1.4.0) — attendance, homework & daily updates, timetable,
+ * Little Wings Parents (v1.5.0) — attendance, homework & daily updates, timetable,
  * report cards, gallery, notices, holidays, fee receipts, feedback and phone alerts.
  * Plain static app, no build step. Talks to the school's Supabase project with
  * the PUBLIC publishable key only; what a parent can see is decided by the
@@ -11,9 +11,9 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.4.0';
-  // Part B (language toggle + phone alerts) ships in v1.5.0; off in v1.4.0.
-  var PART_B = false;
+  var VERSION = '1.5.0';
+  // Part B (language toggle + phone alerts): on since v1.5.0.
+  var PART_B = true;
   var TZ = 'Asia/Kolkata';
   var DOMAIN = 'parents.littlewings.app';
   var OFFICE = '+91 79955 54105', OFFICE_TEL = 'tel:+917995554105';

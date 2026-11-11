@@ -7,9 +7,9 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.6.0';
-  // Part B (language toggle + phone alerts) ships in v2.7.0; off in v2.6.0.
-  var PART_B = false;
+  var APP_VERSION = '2.7.0';
+  // Part B (language toggle + phone alerts): on since v2.7.0.
+  var PART_B = true;
   var PARENT_DOMAIN = 'parents.littlewings.app';
   var PARENTS_APP_URL = 'https://thelittlewingsplayschool.github.io/Dashboard/parents/';
   var TZ = 'Asia/Kolkata';
