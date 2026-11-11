@@ -647,3 +647,12 @@ body:has(#sw-update:not([hidden])) .view { padding-bottom: calc(var(--nav-h) + 5
   .unsaved-actions .btn { padding-left: .5rem; padding-right: .5rem; }
 }
 .btn.saving { opacity: .8; cursor: progress; }
+
+/* ---------- v2.9: share receipt / slip / report card as a file ---------- */
+.btn.sky { background: var(--sky); color: #fff; box-shadow: 0 3px 0 var(--sky-d); }
+.receipt-actions .btn.small { min-height: 40px; }
+@media (max-width: 480px) {
+  .receipt-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .receipt-actions .btn { width: 100%; justify-content: center; padding-left: .5rem; padding-right: .5rem; }
+  .receipt-actions .btn.wa-btn, .receipt-actions .btn.sky { grid-column: span 1; min-height: 48px; }
+}

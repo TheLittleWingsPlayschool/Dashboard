@@ -319,3 +319,5 @@ img[data-p]:not([src]) { visibility: hidden; }
 .ask-actions .btn { width: 100%; min-height: 46px; justify-content: center; }
 .ask-actions .keep:focus { outline: 3px solid var(--coral); outline-offset: 2px; }
 .btn.danger-o { background: #fff; color: var(--coral-d); border: 2px solid var(--coral); }
+/* v1.7: share as file */
+@media (max-width: 480px) { .rcpt-actions { display: grid; grid-template-columns: 1fr 1fr; } .rcpt-actions .btn { width: 100%; justify-content: center; min-height: 46px; } }

@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.8.0';
+  var APP_VERSION = '2.9.0';
   // Part B (language toggle + phone alerts): on since v2.7.0.
   var PART_B = true;
   var PARENT_DOMAIN = 'parents.littlewings.app';
@@ -2032,11 +2032,11 @@
     openModal({
       title: 'Receipt ' + p.receiptNo, size: 'wide',
       body: '<div class="receipt-preview">' + window.LWReceipt.html(receiptData(p)) + '</div>' +
-        '<div class="receipt-actions"><a class="btn wa-btn" href="' + esc(receiptWaLink(p)) + '" target="_blank" rel="noopener">' + WA_SVG + ' Share on WhatsApp' + (wa && validPhone(wa) ? '' : ' (choose chat)') + '</a>' +
-        '<button type="button" class="btn ghost" data-act="receipt-img" data-id="' + esc(p.id) + '">🖼️ Save image</button>' +
-        '<button type="button" class="btn ghost" data-act="receipt-pdf" data-id="' + esc(p.id) + '">📄 Save as PDF</button>' +
-        '<button type="button" class="btn primary" data-act="receipt-print" data-id="' + esc(p.id) + '">🖨️ Print (2 copies)</button></div>' +
-        '<p class="muted small">Save as PDF: in the print window choose <b>Save as PDF</b> (Android: <b>Save as PDF</b> printer; iPhone: Share → Save to Files). Print puts a parent copy and an office copy on one A4 page.</p>'
+        '<div class="receipt-actions">' + shareButtonsHTML('receipt', p.id, 'Share receipt') +
+        '<button type="button" class="btn ghost" data-act="receipt-print" data-id="' + esc(p.id) + '">🖨️ Print (2 copies)</button>' +
+        '<a class="btn ghost small" href="' + esc(receiptWaLink(p)) + '" target="_blank" rel="noopener">' + WA_SVG + ' Text only' + (wa && validPhone(wa) ? '' : ' (choose chat)') + '</a></div>' +
+        '<p class="muted small"><b>Share receipt</b> sends the receipt picture (<b>Share PDF</b>: a PDF file) to WhatsApp or any app on this phone. On a computer the file is saved to Downloads and WhatsApp opens — attach the saved file there. Print puts a parent copy and an office copy on one A4 page.</p>',
+      mount: function () { prepareDoc('receipt', p.id); }
     });
   }
   function printReceipt(id, single) {
@@ -2047,7 +2047,7 @@
   function saveReceiptImage(id) {
     var p = findPayment(id);
     if (!p || !window.LWReceipt) return;
-    window.LWReceipt.saveImage(receiptData(p), receiptFileName(p)).then(function (r) { if (r === 'downloaded') toast('Receipt image saved'); }).catch(function (e) { toast('Could not make the image: ' + (e && e.message || e), 'err'); });
+    docOut('receipt', p.id, 'save');
   }
   function renumberReceipt(id) {
     var p = findPayment(id);
@@ -2804,7 +2804,7 @@
   function openSalarySlip(id) {
     var x = S.salaries.filter(function (r) { return r.id === id; })[0];
     if (!x) return;
-    openModal({ title: 'Salary slip · ' + x.staffName, size: 'wide', body: '<div class="slip-preview">' + salarySlipHTML(x) + '</div><div class="receipt-actions"><button type="button" class="btn primary" data-act="sal-print" data-id="' + esc(x.id) + '">🖨️ Print / Save as PDF</button></div>' });
+    openModal({ title: 'Salary slip · ' + x.staffName, size: 'wide', body: '<div class="slip-preview">' + salarySlipHTML(x) + '</div><div class="receipt-actions">' + shareButtonsHTML('slip', x.id, 'Share slip') + '<button type="button" class="btn ghost" data-act="sal-print" data-id="' + esc(x.id) + '">🖨️ Print</button></div>', mount: function () { prepareDoc('slip', x.id); } });
   }
   function viewStaffAtt() {
     if (!isISODate(UI.sattDate) || UI.sattDate > todayISO()) UI.sattDate = todayISO();
@@ -3772,11 +3772,85 @@
       r.rows.map(function (x) { return x.name + ': ' + (x.max > 0 ? (x.value === '' ? '—' : x.value) + '/' + x.max + (x.grade ? ' (' + x.grade + ')' : '') : (x.value || '—')); }).join('\n') +
       (r.max > 0 ? '\nTotal: ' + r.total + '/' + r.max + (r.pct != null ? ' (' + r.pct + '%)' : '') : '') + (m && m.remarks ? '\n\nRemarks: ' + m.remarks : '') + '\n\n– ' + S.settings.schoolName;
   }
+  /* ---------- v2.9: share / save receipts, salary slips and report cards as real files ---------- */
+  function hashStr(str) { var h = 0; for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+  function slipSpec(x) {
+    var a = staffAttMonth(x.staffId, x.month), wd = workingDays(x.month).length, st = S.settings;
+    var rows = [['Name', x.staffName, true], ['Role', x.role || '—']];
+    if (a.P + a.A + a.H) rows.push(['Attendance', 'Present ' + (a.P + a.H / 2) + ' day(s), absent ' + a.A + ' (working days so far: ' + wd + ')']);
+    rows.push(['Monthly salary', inr(x.base)]);
+    if (num(x.advance)) rows.push(['Advance deducted', '− ' + inr(x.advance)]);
+    if (num(x.deduction)) rows.push(['Other deduction', '− ' + inr(x.deduction)]);
+    if (num(x.bonus)) rows.push(['Bonus / extra', '+ ' + inr(x.bonus)]);
+    rows.push(['Payment mode', x.mode || '—']);
+    if (x.note) rows.push(['Note', x.note]);
+    return { school: { name: st.schoolName, address: st.address, phone: st.phone, email: st.email }, logo: 'assets/logo.jpeg', tag: 'SALARY SLIP',
+      meta: [['Slip no.', x.slipNo || '—'], ['Month', fmtMonth(x.month)], ['Paid on', fmtDate(x.paidOn)]], rows: rows,
+      amount: { label: 'Amount paid', value: inr(x.amount), words: 'Rupees ' + inWords(x.amount) + ' Only' },
+      signs: ['Employee signature', 'For ' + (st.schoolName || 'the school')], footer: 'This is a computer-generated salary slip.' };
+  }
+  function rcSpec(e, s, m) {
+    var st = S.settings, r = examResult(e, m);
+    var meta = [['Name', s.name], ['Class', classLabel(s)]];
+    if (s.dob) meta.push(['Date of birth', fmtDate(s.dob)]);
+    if (primaryName(s)) meta.push(['Parent', primaryName(s)]);
+    if (e.term || e.date) meta.push(['Term', [e.term, e.date ? fmtDate(e.date) : ''].filter(Boolean).join(' · ')]);
+    return { school: { name: st.schoolName, address: st.address, phone: st.phone, email: st.email }, logo: 'assets/logo.jpeg', tag: 'REPORT CARD',
+      title: 'Progress Report · ' + e.name + (e.year ? ' · ' + e.year : ''), meta: meta,
+      table: { head: ['Subject', 'Marks', 'Grade'], widths: [0.5, 0.25, 0.25], rows: r.rows.map(function (x) { return [x.name, x.max > 0 ? (x.value === '' ? '—' : x.value) + ' / ' + x.max : '—', x.grade || (x.max > 0 ? '' : x.value) || '—']; }),
+        foot: r.max > 0 ? ['Total', r.total + ' / ' + r.max, r.pct != null ? r.pct + '% · ' + gradeOf(r.pct) : ''] : null },
+      note: { label: 'Remarks', text: (m && m.remarks) || '—' }, small: 'Grades: A+ 90%+ · A 75%+ · B 60%+ · C 45%+ · D below 45% · AB absent',
+      signs: ['Class teacher', 'Principal', 'Parent'], footer: 'This is a computer-generated report card.' };
+  }
+  // What to draw, the file name, the caption text and the WhatsApp chat for the computer fallback.
+  function docSpec(kind, id) {
+    if (!window.LWReceipt) return null;
+    var waTo = function (phone, text) { return phone && validPhone(phone) ? waHref(phone, text) : 'https://wa.me/?text=' + encodeURIComponent(text); };
+    if (kind === 'receipt') {
+      var p = findPayment(id); if (!p) return null;
+      var rd = receiptData(p), s = studentById(p.studentId), txt = receiptText(p);
+      return { what: 'Receipt', name: receiptFileName(p), title: 'Fee receipt ' + p.receiptNo, text: txt, wa: waTo(s ? (s.whatsapp || primaryPhone(s)) : '', txt), stamp: hashStr(JSON.stringify(rd)), canvas: function () { return window.LWReceipt.receiptCanvas(rd); } };
+    }
+    if (kind === 'slip') {
+      var x = S.salaries.filter(function (r) { return r.id === id; })[0]; if (!x) return null;
+      var sp = slipSpec(x), stf = staffById(x.staffId), st = 'Salary slip ' + (x.slipNo || '') + ' · ' + x.staffName + ' · ' + fmtMonth(x.month) + ': ' + inr(x.amount) + ' paid on ' + fmtDate(x.paidOn) + '. – ' + S.settings.schoolName;
+      return { what: 'Salary slip', name: 'Salary slip ' + (x.slipNo || '') + ' - ' + x.staffName, title: 'Salary slip ' + (x.slipNo || ''), text: st, wa: waTo(stf && stf.phone, st), stamp: hashStr(JSON.stringify(sp)), canvas: function () { return window.LWReceipt.docCanvas(sp); } };
+    }
+    if (kind === 'rc') {
+      var ids = String(id).split('|'), e = examById(ids[0]), stu = studentById(ids[1]); if (!e || !stu) return null;
+      var m = marksOf(e.id, stu.id), rs = rcSpec(e, stu, m), rt = reportCardText(e, stu, m);
+      return { what: 'Report card', name: 'Report card - ' + stu.name + ' - ' + e.name, title: 'Report card · ' + stu.name, text: rt, wa: waTo(stu.whatsapp || primaryPhone(stu), rt), stamp: hashStr(JSON.stringify(rs)), canvas: function () { return window.LWReceipt.docCanvas(rs); } };
+    }
+    return null;
+  }
+  function docKey(kind, id, d, pdf) { return kind + '|' + id + '|' + d.stamp + '|' + (pdf ? 'pdf' : 'img'); }
+  function docMake(d, pdf) { return function () { return d.canvas().then(function (c) { return pdf ? window.LWReceipt.pdfFile(c, d.name, d.title) : window.LWReceipt.imageFile(c, d.name); }); }; }
+  // Make both files in the background as soon as the pop-up opens.
+  function prepareDoc(kind, id) {
+    var d = docSpec(kind, id); if (!d) return;
+    setTimeout(function () {
+      window.LWReceipt.prepare(docKey(kind, id, d, false), docMake(d, false)).then(function () { return window.LWReceipt.prepare(docKey(kind, id, d, true), docMake(d, true)); }).catch(function (e) { console.warn('prepare', e); });
+    }, 60);
+  }
+  // mode: share (picture) | share-pdf | save (picture) | save-pdf
+  function docOut(kind, id, mode) {
+    var d = docSpec(kind, id); if (!d) return Promise.resolve('error');
+    var pdf = /pdf/.test(mode);
+    return window.LWReceipt.shareDoc({ key: docKey(kind, id, d, pdf), make: docMake(d, pdf), type: pdf ? 'application/pdf' : 'image/png', title: d.title, text: d.text, waUrl: d.wa, save: /^save/.test(mode), toast: toast,
+      msgs: { savedWa: d.what + ' saved — attach it in WhatsApp', saved: d.what + (pdf ? ' PDF' : ' image') + ' saved', retry: d.what + ' is ready — tap Share again', fail: 'Could not make the file' } });
+  }
+  function shareButtonsHTML(kind, id, label) {
+    var a = ' data-act="doc-out" data-kind="' + kind + '" data-id="' + esc(id) + '"';
+    return '<button type="button" class="btn wa-btn"' + a + ' data-mode="share">📤 ' + esc(label) + '</button>' +
+      '<button type="button" class="btn sky"' + a + ' data-mode="share-pdf">📄 ' + esc(t('Share PDF')) + '</button>' +
+      '<button type="button" class="btn ghost"' + a + ' data-mode="save">🖼️ ' + esc(t('Save image')) + '</button>' +
+      '<button type="button" class="btn ghost"' + a + ' data-mode="save-pdf">⬇️ ' + esc(t('Save PDF')) + '</button>';
+  }
   function openReportCard(examId, sid) {
     var e = examById(examId), s = studentById(sid);
     if (!e || !s) return;
     var m = marksOf(e.id, s.id), phone = s.whatsapp || primaryPhone(s);
-    openModal({ title: t('Report card') + ' · ' + s.name, size: 'wide', body: '<div class="rc-preview">' + reportCardHTML(e, s, m) + '</div><div class="form-actions"><button class="btn ghost" data-act="rc-wa" data-exam="' + esc(e.id) + '" data-sid="' + esc(s.id) + '"' + (phone ? '' : ' disabled title="No parent phone"') + '>💬 WhatsApp</button><button class="btn primary" data-act="rc-print" data-exam="' + esc(e.id) + '" data-sid="' + esc(s.id) + '">🖨️ ' + esc(t('Print / PDF')) + '</button></div>' });
+    openModal({ title: t('Report card') + ' · ' + s.name, size: 'wide', body: '<div class="rc-preview">' + reportCardHTML(e, s, m) + '</div><div class="form-actions">' + shareButtonsHTML('rc', e.id + '|' + s.id, t('Share')) + '<button class="btn ghost" data-act="rc-wa" data-exam="' + esc(e.id) + '" data-sid="' + esc(s.id) + '"' + (phone ? '' : ' disabled title="No parent phone"') + '>💬 WhatsApp</button><button class="btn primary" data-act="rc-print" data-exam="' + esc(e.id) + '" data-sid="' + esc(s.id) + '">🖨️ ' + esc(t('Print / PDF')) + '</button></div>' , mount: function () { prepareDoc('rc', e.id + '|' + s.id); } });
   }
   function printReportCards(e, sids) {
     var inner = sids.map(function (sid) { var s = studentById(sid); return s ? reportCardHTML(e, s, marksOf(e.id, s.id)) : ''; }).join('');
@@ -4596,6 +4670,8 @@
     te: { 'You have unsaved changes': 'మీ మార్పులు ఇంకా సేవ్ కాలేదు', 'Save them before you leave?': 'వెళ్లే ముందు వాటిని సేవ్ చేయాలా?', 'Keep editing': 'సవరణ కొనసాగించండి', 'Discard': 'వదిలేయండి', 'Saving…': 'సేవ్ అవుతోంది…' },
     hi: { 'You have unsaved changes': 'आपके बदलाव अभी सेव नहीं हुए हैं', 'Save them before you leave?': 'जाने से पहले इन्हें सेव करें?', 'Keep editing': 'बदलाव जारी रखें', 'Discard': 'छोड़ दें', 'Saving…': 'सेव हो रहा है…' }
   };
+  GUARD_I18N.te['Share PDF'] = 'PDF షేర్ చేయండి'; GUARD_I18N.te['Save image'] = GUARD_I18N.te['Save image'] || 'చిత్రం సేవ్ చేయండి'; GUARD_I18N.te['Save PDF'] = 'PDF సేవ్ చేయండి'; GUARD_I18N.te['Share'] = 'షేర్ చేయండి';
+  GUARD_I18N.hi['Share PDF'] = 'PDF शेयर करें'; GUARD_I18N.hi['Save image'] = GUARD_I18N.hi['Save image'] || 'फ़ोटो सेव करें'; GUARD_I18N.hi['Save PDF'] = 'PDF सेव करें'; GUARD_I18N.hi['Share'] = 'शेयर करें';
   Object.keys(GUARD_I18N).forEach(function (l) { if (I18N[l]) Object.keys(GUARD_I18N[l]).forEach(function (k) { if (!I18N[l][k]) I18N[l][k] = GUARD_I18N[l][k]; }); });
 
   /* =====================================================================
@@ -4692,6 +4768,11 @@
     'receipt-view': function (el) { if (isAdmin()) openReceipt(attr(el, 'id')); },
     'receipt-print': function (el) { printReceipt(attr(el, 'id')); },
     'receipt-pdf': function (el) { printReceipt(attr(el, 'id'), true); },
+    'doc-out': function (el) {
+      if (el.disabled) return;
+      el.disabled = true; el.classList.add('saving');
+      docOut(attr(el, 'kind'), attr(el, 'id'), attr(el, 'mode')).then(function () { el.disabled = false; el.classList.remove('saving'); }, function () { el.disabled = false; el.classList.remove('saving'); });
+    },
     'receipt-img': function (el) { saveReceiptImage(attr(el, 'id')); },
     'receipt-renum': function (el) { if (isAdmin()) renumberReceipt(attr(el, 'id')); },
     'student-receipts': function (el) { if (isAdmin()) openStudentReceipts(attr(el, 'id')); },

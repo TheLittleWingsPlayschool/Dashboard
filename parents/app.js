@@ -1,5 +1,5 @@
 /*!
- * Little Wings Parents (v1.6.0) — attendance, homework & daily updates, timetable,
+ * Little Wings Parents (v1.7.0) — attendance, homework & daily updates, timetable,
  * report cards, gallery, notices, holidays, fee receipts, feedback and phone alerts.
  * Plain static app, no build step. Talks to the school's Supabase project with
  * the PUBLIC publishable key only; what a parent can see is decided by the
@@ -11,7 +11,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.6.0';
+  var VERSION = '1.7.0';
   // Part B (language toggle + phone alerts): on since v1.5.0.
   var PART_B = true;
   var TZ = 'Asia/Kolkata';
@@ -48,6 +48,9 @@
    * shared with the staff dashboard on this phone) and per login (user_metadata). */
   var I18N = {
     te: {
+      'Share receipt': 'రసీదు షేర్ చేయండి', 'Share PDF': 'PDF షేర్ చేయండి', 'Save PDF': 'PDF సేవ్ చేయండి', 'Share': 'షేర్ చేయండి', 'Print': 'ప్రింట్', 'Text only': 'టెక్స్ట్ మాత్రమే', 'Saved': 'సేవ్ అయింది', 'Saved — attach it in WhatsApp': 'సేవ్ అయింది — WhatsAppలో జత చేయండి', 'Ready — tap Share again': 'సిద్ధంగా ఉంది — మళ్లీ షేర్ నొక్కండి', 'Could not make the file': 'ఫైల్ తయారు కాలేదు',
+      'Share sends the receipt as a picture or PDF to WhatsApp or any app. On a computer it is saved to Downloads.': 'షేర్ నొక్కితే రసీదు చిత్రం లేదా PDFగా WhatsApp లేదా ఏ యాప్‌కైనా వెళ్తుంది. కంప్యూటర్‌లో Downloadsలో సేవ్ అవుతుంది.',
+      'Share sends the report card as a picture or PDF to WhatsApp or any app. On a computer it is saved to Downloads.': 'షేర్ నొక్కితే రిపోర్ట్ కార్డ్ చిత్రం లేదా PDFగా WhatsApp లేదా ఏ యాప్‌కైనా వెళ్తుంది. కంప్యూటర్‌లో Downloadsలో సేవ్ అవుతుంది.',
       'You have unsaved changes': 'మీ మార్పులు ఇంకా సేవ్ కాలేదు', 'Send your message before you leave?': 'వెళ్లే ముందు మీ సందేశాన్ని పంపాలా?', 'Keep editing': 'సవరణ కొనసాగించండి', 'Discard': 'వదిలేయండి',
       'Little Wings Parents': 'లిటిల్ వింగ్స్ పేరెంట్స్',
       'Welcome! See your child’s attendance, homework, fee receipts and school notices.': 'స్వాగతం! మీ పిల్లల హాజరు, హోంవర్క్, ఫీజు రసీదులు మరియు పాఠశాల నోటీసులు ఇక్కడ చూడండి.',
@@ -142,6 +145,9 @@
       'Not found.': 'కనిపించలేదు.', 'Connect to the internet to see this.': 'ఇది చూడటానికి ఇంటర్నెట్‌కు కనెక్ట్ చేయండి.'
     },
     hi: {
+      'Share receipt': 'रसीद शेयर करें', 'Share PDF': 'PDF शेयर करें', 'Save PDF': 'PDF सेव करें', 'Share': 'शेयर करें', 'Print': 'प्रिंट', 'Text only': 'सिर्फ़ टेक्स्ट', 'Saved': 'सेव हो गया', 'Saved — attach it in WhatsApp': 'सेव हो गया — WhatsApp में जोड़ें', 'Ready — tap Share again': 'तैयार है — फिर से शेयर दबाएँ', 'Could not make the file': 'फ़ाइल नहीं बन सकी',
+      'Share sends the receipt as a picture or PDF to WhatsApp or any app. On a computer it is saved to Downloads.': 'शेयर दबाने पर रसीद फ़ोटो या PDF के रूप में WhatsApp या किसी भी ऐप में जाती है। कंप्यूटर पर यह Downloads में सेव होती है।',
+      'Share sends the report card as a picture or PDF to WhatsApp or any app. On a computer it is saved to Downloads.': 'शेयर दबाने पर रिपोर्ट कार्ड फ़ोटो या PDF के रूप में WhatsApp या किसी भी ऐप में जाता है। कंप्यूटर पर यह Downloads में सेव होता है।',
       'You have unsaved changes': 'आपके बदलाव अभी सेव नहीं हुए हैं', 'Send your message before you leave?': 'जाने से पहले अपना संदेश भेजें?', 'Keep editing': 'बदलाव जारी रखें', 'Discard': 'छोड़ दें',
       'Little Wings Parents': 'लिटिल विंग्स पेरेंट्स',
       'Welcome! See your child’s attendance, homework, fee receipts and school notices.': 'स्वागत है! अपने बच्चे की हाज़िरी, होमवर्क, फ़ीस रसीदें और स्कूल की सूचनाएँ यहाँ देखें।',
@@ -767,11 +773,12 @@
     if (!r || !window.LWReceipt) return;
     $('#sheet-root').innerHTML = '<div class="sheet-bg" data-act="sheet-bg"><div class="sheet wide" id="rcpt-sheet" role="dialog" aria-modal="true" aria-label="' + esc(t('Receipt')) + '"><div class="sheet-head"><h2>🧾 ' + esc(t('Receipt')) + ' ' + esc(r.receiptNo) + '</h2><button class="icon-btn" data-act="sheet-close" aria-label="' + esc(t('Close')) + '">✕</button></div>' +
       '<div class="rcpt-preview">' + window.LWReceipt.html(r) + '</div>' +
-      '<div class="rcpt-actions"><button class="btn primary" data-act="rcpt-print" data-id="' + esc(pid) + '">🖨️ ' + esc(t('Print / Save as PDF')) + '</button>' +
-      '<button class="btn sky" data-act="rcpt-img" data-id="' + esc(pid) + '">🖼️ ' + esc(t('Save image')) + '</button>' +
-      '<a class="btn ghost" href="https://wa.me/?text=' + encodeURIComponent(window.LWReceipt.text(r)) + '" target="_blank" rel="noopener">💬 ' + esc(t('Share on WhatsApp')) + '</a></div>' +
-      '<p class="muted small">' + esc(t('To save a PDF: tap Print, then choose Save as PDF (iPhone: tap Share → Save to Files).')) + '</p></div></div>';
+      '<div class="rcpt-actions">' + pShareButtons('receipt', pid, t('Share receipt')) +
+      '<button class="btn ghost" data-act="rcpt-print" data-id="' + esc(pid) + '">🖨️ ' + esc(t('Print')) + '</button>' +
+      '<a class="btn ghost" href="https://wa.me/?text=' + encodeURIComponent(window.LWReceipt.text(r)) + '" target="_blank" rel="noopener">💬 ' + esc(t('Text only')) + '</a></div>' +
+      '<p class="muted small">' + esc(t('Share sends the receipt as a picture or PDF to WhatsApp or any app. On a computer it is saved to Downloads.')) + '</p></div></div>';
     document.body.classList.add('sheet-open');
+    pPrepare('receipt', pid);
   }
 
   /* timetable (read-only) */
@@ -852,10 +859,55 @@
     var x = rcFind(id); if (!x) return;
     $('#sheet-root').innerHTML = '<div class="sheet-bg" data-act="sheet-bg"><div class="sheet wide" id="rc-sheet" role="dialog" aria-modal="true" aria-label="' + esc(t('Report card')) + '"><div class="sheet-head"><h2>📄 ' + esc(t('Report card')) + '</h2><button class="icon-btn" data-act="sheet-close" aria-label="' + esc(t('Close')) + '">✕</button></div>' +
       '<div class="rc-preview">' + rcHTML(x) + '</div>' +
-      '<div class="rcpt-actions"><button class="btn primary" data-act="rc-print" data-id="' + esc(id) + '">🖨️ ' + esc(t('Print / Save as PDF')) + '</button>' +
-      '<a class="btn ghost" href="https://wa.me/?text=' + encodeURIComponent(rcText(x)) + '" target="_blank" rel="noopener">💬 ' + esc(t('Share on WhatsApp')) + '</a></div>' +
-      '<p class="muted small">' + esc(t('To save a PDF: tap Print, then choose Save as PDF (iPhone: tap Share → Save to Files).')) + '</p></div></div>';
+      '<div class="rcpt-actions">' + pShareButtons('rc', id, t('Share')) +
+      '<button class="btn ghost" data-act="rc-print" data-id="' + esc(id) + '">🖨️ ' + esc(t('Print')) + '</button>' +
+      '<a class="btn ghost" href="https://wa.me/?text=' + encodeURIComponent(rcText(x)) + '" target="_blank" rel="noopener">💬 ' + esc(t('Text only')) + '</a></div>' +
+      '<p class="muted small">' + esc(t('Share sends the report card as a picture or PDF to WhatsApp or any app. On a computer it is saved to Downloads.')) + '</p></div></div>';
     document.body.classList.add('sheet-open');
+    pPrepare('rc', id);
+  }
+  /* v1.7: share / save the receipt or report card as a real file (picture or PDF), made on this phone */
+  function pHash(str) { var h = 0; for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+  function pDoc(kind, id) {
+    var L = window.LWReceipt; if (!L) return null;
+    if (kind === 'receipt') {
+      var r = receiptFor(id); if (!r) return null;
+      return { what: t('Receipt'), name: 'Receipt ' + r.receiptNo + ' - ' + r.studentName, title: 'Fee receipt ' + r.receiptNo, text: L.text(r), stamp: pHash(JSON.stringify(r)), canvas: function () { return L.receiptCanvas(r); } };
+    }
+    if (kind === 'rc') {
+      var x = rcFind(id), k = child(); if (!x || !k) return null;
+      var e = x.exam || {}, res = rcResult(e, x.marks), sc = school();
+      var meta = [[t('Name'), k.name], [t('Class'), className(x.classId || k.classId) + (k.section ? ' · ' + k.section : '')]];
+      if (S.name) meta.push([t('Parent'), S.name]);
+      if (e.term || e.date) meta.push(['Term', [e.term, e.date ? shortDate(e.date) : ''].filter(Boolean).join(' · ')]);
+      var spec = { school: sc, logo: '../assets/logo.jpeg', tag: 'REPORT CARD', title: t('Progress Report') + ' · ' + (e.name || '') + (e.year ? ' · ' + e.year : ''), meta: meta,
+        table: { head: [t('Subject'), t('Marks'), t('Grade')], widths: [0.5, 0.25, 0.25], rows: res.rows.map(function (y) { return [y.name, y.max > 0 ? (y.value === '' ? '—' : y.value) + ' / ' + y.max : '—', y.grade || (y.max > 0 ? '' : y.value) || '—']; }),
+          foot: res.max > 0 ? [t('Total'), res.total + ' / ' + res.max, res.pct != null ? res.pct + '% · ' + gradeOf(res.pct) : ''] : null },
+        note: { label: t('Remarks'), text: x.remarks || '—' }, small: t('Grades: A+ 90%+ · A 75%+ · B 60%+ · C 45%+ · D below 45% · AB absent'),
+        signs: [t('Class teacher'), t('Principal'), t('Parent')], footer: 'This is a computer-generated report card.' };
+      return { what: t('Report card'), name: 'Report card - ' + k.name + ' - ' + (e.name || ''), title: t('Report card') + ' · ' + k.name, text: rcText(x), stamp: pHash(JSON.stringify(spec)), canvas: function () { return L.docCanvas(spec); } };
+    }
+    return null;
+  }
+  function pKey(kind, id, d, pdf) { return 'p|' + kind + '|' + id + '|' + d.stamp + '|' + (pdf ? 'pdf' : 'img'); }
+  function pMake(d, pdf) { return function () { return d.canvas().then(function (c) { return pdf ? window.LWReceipt.pdfFile(c, d.name, d.title) : window.LWReceipt.imageFile(c, d.name); }); }; }
+  function pPrepare(kind, id) {
+    var d = pDoc(kind, id); if (!d) return;
+    setTimeout(function () { window.LWReceipt.prepare(pKey(kind, id, d, false), pMake(d, false)).then(function () { return window.LWReceipt.prepare(pKey(kind, id, d, true), pMake(d, true)); }).catch(function () {}); }, 60);
+  }
+  function pDocOut(kind, id, mode) {
+    var d = pDoc(kind, id); if (!d) return Promise.resolve('error');
+    var pdf = /pdf/.test(mode);
+    return window.LWReceipt.shareDoc({ key: pKey(kind, id, d, pdf), make: pMake(d, pdf), type: pdf ? 'application/pdf' : 'image/png', title: d.title, text: d.text,
+      waUrl: 'https://wa.me/?text=' + encodeURIComponent(d.text), save: /^save/.test(mode), toast: function (m, k) { toast(m, k); },
+      msgs: { savedWa: t('Saved — attach it in WhatsApp'), saved: t('Saved'), retry: t('Ready — tap Share again'), fail: t('Could not make the file') } });
+  }
+  function pShareButtons(kind, id, label) {
+    var a = ' data-act="p-doc" data-kind="' + kind + '" data-id="' + esc(id) + '"';
+    return '<button class="btn primary"' + a + ' data-mode="share">📤 ' + esc(label) + '</button>' +
+      '<button class="btn sky"' + a + ' data-mode="share-pdf">📄 ' + esc(t('Share PDF')) + '</button>' +
+      '<button class="btn ghost"' + a + ' data-mode="save">🖼️ ' + esc(t('Save image')) + '</button>' +
+      '<button class="btn ghost"' + a + ' data-mode="save-pdf">⬇️ ' + esc(t('Save PDF')) + '</button>';
   }
   function printDoc(inner, title, cls) {
     var root = $('#print-root'); if (!root) return;
@@ -1178,6 +1230,7 @@
       else showLogin(loginMsg && loginMsg.msg, loginMsg && loginMsg.isErr);
     },
     receipt: function (el) { openReceipt(el.getAttribute('data-id')); },
+    'p-doc': function (el) { if (el.disabled) return; el.disabled = true; pDocOut(el.getAttribute('data-kind'), el.getAttribute('data-id'), el.getAttribute('data-mode')).then(function () { el.disabled = false; }, function () { el.disabled = false; }); },
     'rcpt-print': function (el) { var r = receiptFor(el.getAttribute('data-id')); if (r) window.LWReceipt.print([r], 'Receipt ' + r.receiptNo + ' - ' + r.studentName); },
     'rcpt-img': function (el) { var r = receiptFor(el.getAttribute('data-id')); if (r) window.LWReceipt.saveImage(r, 'Receipt ' + r.receiptNo + ' - ' + r.studentName).then(function (x) { if (x === 'downloaded') toast(t('Receipt image saved')); }).catch(function () { toast(t('Could not make the image'), 'err'); }); },
     'rc-open': function (el) { openRC(el.getAttribute('data-id')); },

@@ -1,25 +1,25 @@
 /*!
- * Little Wings Parents service worker (v1.6.0), scope /Dashboard/parents/
+ * Little Wings Parents service worker (v1.7.0), scope /Dashboard/parents/
  * Caches only the app shell (pages, styles, scripts, icons) so the app opens
  * offline. NEVER caches or intercepts Supabase API / Auth / Realtime requests;
  * the child's data is kept in the app's own storage and cleared on sign-out.
  * Private photos (signed Storage URLs) are Supabase requests too, so they are
  * never cached here. Also shows phone alerts (Web Push) and opens the right screen.
  */
-var CACHE_NAME = 'lw-parents-v1.6.0';
+var CACHE_NAME = 'lw-parents-v1.7.0';
 var PRECACHE = [
   './',
   './index.html',
-  './style.css?v=1.6.0',
-  './app.js?v=1.6.0',
+  './style.css?v=1.7.0',
+  './app.js?v=1.7.0',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
   './icons/apple-touch-icon.png',
-  '../config.js?v=2.8.0',
-  '../assets/receipt.js?v=2.8.0',
-  '../assets/receipt.css?v=2.8.0',
+  '../config.js?v=2.9.0',
+  '../assets/receipt.js?v=2.9.0',
+  '../assets/receipt.css?v=2.9.0',
   '../assets/vendor/supabase-js-2.119.0.js',
   '../assets/logo.jpeg'
 ];

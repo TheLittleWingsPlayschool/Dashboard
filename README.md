@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.8, cloud) + Parents app (v1.6)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.9, cloud) + Parents app (v1.7)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -209,6 +209,15 @@ Never paste the private key into WhatsApp, email, a chat or this repository. If 
 
 ## v2.7.1 — easier menu
 The menu is grouped into **Daily, Students, Money, School** and **Admin**. On a computer the side menu now scrolls on its own (short laptop screens), and each group can be folded by tapping its heading (remembered on that device; the group of the open page always opens). On a phone the **More** page uses the same groups. The *New version available* bar now sits just above the bottom bar and no longer covers menu items.
+
+## v2.9 — share the receipt itself, not just text
+
+- **Share receipt** (fee receipt), **Share slip** (salary slip) and **Share** (report card) now send a real file: a picture (PNG, about 2× sharp; JPEG if it would be over ~1.5 MB) through the phone's share sheet, so it can go straight to WhatsApp or any app. **Share PDF** sends a one-page A4 PDF instead.
+- The file is made on the phone when the receipt opens (logo, ₹ sign, Telugu/Hindi names included), so the tap shares at once. Closing the share sheet shows no error.
+- On a computer (no file sharing), the file is downloaded and WhatsApp Web opens to the parent's number with the message — attach the downloaded file there. The app says "saved — attach it in WhatsApp"; it never claims it was attached.
+- **Save image**, **Save PDF**, **Print** and the old **Text only** WhatsApp link are kept.
+- Parents app v1.7: the same Share / Share PDF / Save buttons on fee receipts and report cards (English, Telugu, Hindi).
+- ID cards are unchanged (multi-card A4 sheets; still Print / Save as PDF).
 
 ## v2.8 — never lose typed changes
 Every form in the dashboard (pop-ups and page forms such as Settings, Timetable, Marks, Notices, Promotion, Documents) remembers the values it was opened with. If something was changed and you try to leave — **Cancel**, **✕**, **Esc**, tapping outside, the phone/browser **Back** button, the menu, another page, switching class/date, **Sign out**, or closing/reloading the tab — a small box asks:

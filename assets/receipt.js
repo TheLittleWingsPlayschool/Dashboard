@@ -2,7 +2,8 @@
  * The Little Wings — shared fee receipt (v2.5). Used by the admin dashboard
  * and the Parents app. No dependencies, no network: HTML receipt + print to
  * one clean page (Save as PDF from the print dialog) + a PNG image drawn on a
- * canvas + a WhatsApp text summary.
+ * canvas + a WhatsApp text summary. v2.9: the picture / a one-page PDF can be
+ * shared as a real file (navigator.share) or saved, made entirely on the phone.
  */
 (function () {
   'use strict';
@@ -130,11 +131,22 @@
     if (cur) lines.push(cur);
     return lines;
   }
-  function png(r) {
-    return loadImg(r.logo).then(function (logo) {
+  // Telugu / Hindi names and labels use the phone's own Indian-language fonts.
+  var FONT = '"Segoe UI", Roboto, "Noto Sans", "Noto Sans Telugu", "Noto Sans Devanagari", "Nirmala UI", Gautami, Mangal, Helvetica, Arial, sans-serif';
+  function fontsReady() { try { return document.fonts && document.fonts.ready ? Promise.race([document.fonts.ready, new Promise(function (r) { setTimeout(r, 1500); })]) : Promise.resolve(); } catch (e) { return Promise.resolve(); } }
+  function drawLogo(ctx, logo, x, y, size) {
+    ctx.save(); ctx.beginPath(); ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2); ctx.clip();
+    if (logo) ctx.drawImage(logo, x, y, size, size);
+    else { ctx.fillStyle = '#38a8e0'; ctx.fillRect(x, y, size, size); ctx.fillStyle = '#fff'; ctx.font = 'bold ' + Math.round(size * 0.38) + 'px ' + FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('LW', x + size / 2, y + size / 2); }
+    ctx.restore(); ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  }
+  function png(r) { return receiptCanvas(r).then(function (c) { return canvasBlob(c, 'image/png'); }); }
+  function receiptCanvas(r) {
+    return Promise.all([loadImg(r.logo), fontsReady()]).then(function (got) {
+      var logo = got[0];
       var W = 1200, P = 56, s = r.school || {};
       var c = document.createElement('canvas'), ctx = c.getContext('2d');
-      var F = '"Segoe UI", Roboto, "Noto Sans", Helvetica, Arial, sans-serif';
+      var F = FONT;
       // measure pass for height
       c.width = W; c.height = 10;
       ctx.font = '18px ' + F;
@@ -158,7 +170,7 @@
       ctx.fillStyle = g; ctx.fillRect(0, 0, W, 14);
       ctx.strokeStyle = '#d5dde6'; ctx.lineWidth = 3; ctx.strokeRect(1.5, 1.5, W - 3, H - 3);
       var y = 50;
-      if (logo) { ctx.save(); ctx.beginPath(); ctx.arc(P + 50, y + 50, 50, 0, Math.PI * 2); ctx.clip(); ctx.drawImage(logo, P, y, 100, 100); ctx.restore(); }
+      drawLogo(ctx, logo, P, y, 100);
       var x = P + 124;
       ctx.fillStyle = '#1b6e99'; ctx.font = 'bold 34px ' + F; ctx.textBaseline = 'top';
       ctx.fillText(s.name || 'The Little Wings Play School', x, y + 4, W - x - P - 250);
@@ -202,30 +214,225 @@
       ctx.fillStyle = '#8b97a3'; ctx.font = '17px ' + F; ctx.fillText('This is a computer-generated receipt. Thank you!', W / 2, y);
       ctx.textAlign = 'left';
       if (r.sample) { ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(-0.42); ctx.fillStyle = 'rgba(255,122,107,0.16)'; ctx.font = 'bold 190px ' + F; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('SAMPLE', 0, 0); ctx.restore(); }
-      return new Promise(function (res, rej) { c.toBlob(function (b) { if (b) res(b); else rej(new Error('Could not make the image')); }, 'image/png'); });
+      return c;
     });
   }
   function roundRect(ctx, x, y, w, h, rad) {
     ctx.beginPath(); ctx.moveTo(x + rad, y); ctx.arcTo(x + w, y, x + w, y + h, rad); ctx.arcTo(x + w, y + h, x, y + h, rad); ctx.arcTo(x, y + h, x, y, rad); ctx.arcTo(x, y, x + w, y, rad); ctx.closePath();
   }
-  // Share the PNG (phone share sheet: WhatsApp, Drive…) or download it.
-  function saveImage(r, filename) {
-    return png(r).then(function (blob) {
-      var name = (filename || ('Receipt-' + (r.receiptNo || 'LW'))).replace(/[^\w.-]+/g, '_') + '.png';
-      var file = null;
-      try { file = new File([blob], name, { type: 'image/png' }); } catch (e) { file = null; }
-      if (file && navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
-        return navigator.share({ files: [file], title: 'Fee receipt ' + (r.receiptNo || '') }).then(function () { return 'shared'; }, function (e) { if (e && e.name === 'AbortError') return 'cancelled'; return download(blob, name); });
-      }
-      return download(blob, name);
+  /* ---------- any document (salary slip, report card…) drawn the same way ----------
+   * d = { school, logo, tag, copy, title, meta: [[label, value]], rows: [[label, value, bold]],
+   *       table: { head: [], rows: [[]], foot: [], widths: [fractions] }, amount: { label, value, words },
+   *       note: { label, text }, small, signs: [labels], footer, sample } */
+  function docCanvas(d) {
+    return Promise.all([loadImg(d.logo), fontsReady()]).then(function (got) {
+      var logo = got[0], W = 1200, P = 56, s = d.school || {};
+      var c = document.createElement('canvas');
+      c.width = W; c.height = 10;
+      var draw = function (H) {
+        var ctx = c.getContext('2d'); ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+        var g = ctx.createLinearGradient(0, 0, W, 0);
+        g.addColorStop(0, '#38a8e0'); g.addColorStop(0.333, '#38a8e0'); g.addColorStop(0.334, '#ff7a6b'); g.addColorStop(0.666, '#ff7a6b'); g.addColorStop(0.667, '#ffc93c'); g.addColorStop(1, '#ffc93c');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, 14);
+        var y = 50, x = P + 124, tagW = d.tag ? 260 : 0;
+        drawLogo(ctx, logo, P, y, 100);
+        ctx.fillStyle = '#1b6e99'; ctx.font = 'bold 34px ' + FONT; ctx.fillText(s.name || 'The Little Wings Play School', x, y + 4, W - x - P - tagW - 10);
+        ctx.fillStyle = '#4a5a6b'; ctx.font = '18px ' + FONT;
+        var yy = y + 50;
+        wrap(ctx, s.address || '', W - x - P - tagW - 10).forEach(function (l) { ctx.fillText(l, x, yy); yy += 24; });
+        var contact = [s.phone ? 'Ph / WhatsApp: ' + s.phone : '', s.email || ''].filter(Boolean).join('  ·  ');
+        if (contact) { ctx.fillText(contact, x, yy, W - x - P - tagW - 10); yy += 24; }
+        if (d.tag) {
+          ctx.font = 'bold 22px ' + FONT;
+          ctx.fillStyle = '#ff7a6b'; roundRect(ctx, W - P - tagW, y, tagW, 54, 27); ctx.fill();
+          ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(d.tag, W - P - tagW / 2, y + 15, tagW - 20);
+          if (d.copy) { ctx.fillStyle = '#5a6b7c'; ctx.font = '17px ' + FONT; ctx.fillText(d.copy, W - P - tagW / 2, y + 64); }
+          ctx.textAlign = 'left';
+        }
+        y = Math.max(y + 130, yy + 30);
+        ctx.fillStyle = '#38a8e0'; ctx.fillRect(P, y, W - P * 2, 4); y += 24;
+        if (d.title) { ctx.fillStyle = '#1e2b38'; ctx.font = 'bold 30px ' + FONT; wrap(ctx, d.title, W - P * 2).forEach(function (l) { ctx.fillText(l, P, y); y += 40; }); y += 6; }
+        if (d.meta && d.meta.length) {
+          var per = 3, cw = (W - P * 2) / per;
+          for (var i = 0; i < d.meta.length; i += per) {
+            d.meta.slice(i, i + per).forEach(function (m, j) { ctx.fillStyle = '#6b7b8c'; ctx.font = '16px ' + FONT; ctx.fillText(String(m[0]).toUpperCase(), P + j * cw, y, cw - 16); ctx.fillStyle = '#1e2b38'; ctx.font = 'bold 25px ' + FONT; ctx.fillText(String(m[1] == null ? '—' : m[1]), P + j * cw, y + 24, cw - 16); });
+            y += 70;
+          }
+          y += 6;
+        }
+        (d.rows || []).forEach(function (rw) {
+          ctx.font = (rw[2] ? 'bold ' : '') + '22px ' + FONT;
+          var lines = wrap(ctx, String(rw[1] == null ? '—' : rw[1]), W - P * 2 - 300);
+          ctx.fillStyle = '#5a6b7c'; ctx.font = '20px ' + FONT; ctx.fillText(rw[0], P, y + 12, 290);
+          ctx.fillStyle = '#1e2b38'; ctx.font = (rw[2] ? 'bold ' : '') + '22px ' + FONT;
+          lines.forEach(function (l, k) { ctx.fillText(l, P + 300, y + 11 + k * 30); });
+          var h = 48 + (lines.length - 1) * 30;
+          ctx.strokeStyle = '#e3e9ef'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]); ctx.beginPath(); ctx.moveTo(P, y + h - 1); ctx.lineTo(W - P, y + h - 1); ctx.stroke(); ctx.setLineDash([]);
+          y += h;
+        });
+        if (d.rows && d.rows.length) y += 24;
+        if (d.table) {
+          var tb = d.table, ws = tb.widths || tb.head.map(function () { return 1 / tb.head.length; });
+          var colX = []; var acc = P; ws.forEach(function (w) { colX.push(acc); acc += w * (W - P * 2); });
+          var rowH = 50;
+          ctx.fillStyle = '#e8f5fc'; ctx.fillRect(P, y, W - P * 2, rowH);
+          ctx.fillStyle = '#1b6e99'; ctx.font = 'bold 21px ' + FONT;
+          tb.head.forEach(function (h, k) { ctx.fillText(h, colX[k] + 14, y + 14, ws[k] * (W - P * 2) - 20); });
+          y += rowH;
+          var line = function (cells, bold, bg) {
+            if (bg) { ctx.fillStyle = bg; ctx.fillRect(P, y, W - P * 2, rowH); }
+            ctx.fillStyle = '#1e2b38'; ctx.font = (bold ? 'bold ' : '') + '21px ' + FONT;
+            cells.forEach(function (v, k) { ctx.font = (bold || k === cells.length - 1 ? 'bold ' : '') + '21px ' + FONT; ctx.fillText(String(v == null ? '' : v), colX[k] + 14, y + 14, ws[k] * (W - P * 2) - 20); });
+            ctx.strokeStyle = '#d5dde6'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(P, y + rowH); ctx.lineTo(W - P, y + rowH); ctx.stroke();
+            y += rowH;
+          };
+          tb.rows.forEach(function (r0) { line(r0, false); });
+          if (tb.foot) line(tb.foot, true, '#fff7dc');
+          ctx.strokeStyle = '#c5d2de'; ctx.lineWidth = 2; ctx.strokeRect(P, y - rowH * (tb.rows.length + 1 + (tb.foot ? 1 : 0)), W - P * 2, rowH * (tb.rows.length + 1 + (tb.foot ? 1 : 0)));
+          y += 26;
+        }
+        if (d.amount) {
+          ctx.font = 'bold 26px ' + FONT;
+          var wl = wrap(ctx, d.amount.words || '', W - P * 2 - 340), bh = Math.max(110, 50 + wl.length * 34);
+          ctx.fillStyle = '#eaf6ec'; roundRect(ctx, P, y, W - P * 2, bh, 16); ctx.fill();
+          ctx.fillStyle = '#1e7a3c'; ctx.font = '16px ' + FONT; ctx.fillText(String(d.amount.label || 'AMOUNT').toUpperCase(), P + 24, y + 20);
+          ctx.font = 'bold 44px ' + FONT; ctx.fillText(d.amount.value || '', P + 24, y + 44, 280);
+          if (wl.length) { ctx.fillStyle = '#5a6b7c'; ctx.font = '16px ' + FONT; ctx.fillText('AMOUNT IN WORDS', P + 330, y + 20); ctx.fillStyle = '#1e2b38'; ctx.font = 'bold 26px ' + FONT; wl.forEach(function (l, k) { ctx.fillText(l, P + 330, y + 46 + k * 34); }); }
+          y += bh + 24;
+        }
+        if (d.note) {
+          ctx.font = '21px ' + FONT;
+          var nl = wrap(ctx, d.note.text || '—', W - P * 2 - 48), nh = 56 + nl.length * 30;
+          ctx.fillStyle = '#f6f8fb'; roundRect(ctx, P, y, W - P * 2, nh, 14); ctx.fill();
+          ctx.fillStyle = '#1b6e99'; ctx.font = 'bold 20px ' + FONT; ctx.fillText(d.note.label || '', P + 24, y + 16);
+          ctx.fillStyle = '#1e2b38'; ctx.font = '21px ' + FONT; nl.forEach(function (l, k) { ctx.fillText(l, P + 24, y + 46 + k * 30); });
+          y += nh + 20;
+        }
+        if (d.small) { ctx.fillStyle = '#6b7b8c'; ctx.font = '17px ' + FONT; wrap(ctx, d.small, W - P * 2).forEach(function (l) { ctx.fillText(l, P, y); y += 24; }); y += 10; }
+        if (d.signs && d.signs.length) {
+          y += 60;
+          var sw = (W - P * 2) / d.signs.length;
+          d.signs.forEach(function (lb, k) {
+            var x0 = P + k * sw + 20, x1 = P + (k + 1) * sw - 20;
+            ctx.strokeStyle = '#8a98a6'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+            ctx.fillStyle = '#5a6b7c'; ctx.font = '17px ' + FONT; ctx.textAlign = 'center'; ctx.fillText(lb, (x0 + x1) / 2, y + 10, x1 - x0); ctx.textAlign = 'left';
+          });
+          y += 50;
+        }
+        y += 24;
+        ctx.fillStyle = '#8b97a3'; ctx.font = '17px ' + FONT; ctx.textAlign = 'center'; ctx.fillText(d.footer || 'This is a computer-generated document.', W / 2, y); ctx.textAlign = 'left';
+        y += 50;
+        ctx.strokeStyle = '#d5dde6'; ctx.lineWidth = 3; ctx.strokeRect(1.5, 1.5, W - 3, H - 3);
+        if (d.sample) { ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(-0.42); ctx.fillStyle = 'rgba(255,122,107,0.16)'; ctx.font = 'bold 190px ' + FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('SAMPLE', 0, 0); ctx.restore(); }
+        return y;
+      };
+      var H = Math.ceil(draw(10));
+      c.width = W; c.height = H;
+      draw(H);
+      return c;
     });
+  }
+
+  /* ---------- files: PNG (JPEG if big) and a one-page A4 PDF, all made on the phone ---------- */
+  function canvasBlob(c, type, q) {
+    return new Promise(function (res, rej) { c.toBlob(function (b) { if (b) res(b); else rej(new Error('Could not make the image')); }, type, q); });
+  }
+  function safeName(n) { return String(n || 'Document').replace(/[^\w.-]+/g, '_').replace(/_+/g, '_').replace(/_(?=\.|$)/g, '').replace(/^_/, '').slice(0, 80) || 'Document'; }
+  function mkFile(blob, name, type) { try { return new File([blob], name, { type: type }); } catch (e) { blob.name = name; return blob; } }
+  var MAX_IMG = 1500000;   // ~1.5 MB: above this the picture is sent as JPEG
+  function imageFile(c, name) {
+    return canvasBlob(c, 'image/png').then(function (b) {
+      if (b.size <= MAX_IMG) return mkFile(b, safeName(name) + '.png', 'image/png');
+      return canvasBlob(c, 'image/jpeg', 0.9).then(function (j) { return mkFile(j, safeName(name) + '.jpg', 'image/jpeg'); });
+    });
+  }
+  function blobBytes(b) { return b.arrayBuffer ? b.arrayBuffer() : new Response(b).arrayBuffer(); }
+  function pdfFile(c, name, title) {
+    return canvasBlob(c, 'image/jpeg', 0.92).then(blobBytes).then(function (buf) {
+      return mkFile(new Blob([pdfBytes(new Uint8Array(buf), c.width, c.height, title || name)], { type: 'application/pdf' }), safeName(name) + '.pdf', 'application/pdf');
+    });
+  }
+  // Minimal PDF 1.4: one A4 page with the JPEG picture of the document (no fonts needed, so Telugu/₹ always look right).
+  function pdfBytes(jpg, w, h, title) {
+    var PW = 595.28, PH = 841.89, M = 24;
+    var sc = Math.min((PW - 2 * M) / w, (PH - 2 * M) / h), dw = w * sc, dh = h * sc, x = (PW - dw) / 2, y = PH - M - dh;
+    var enc = function (str) { var a = new Uint8Array(str.length); for (var i = 0; i < str.length; i++) a[i] = str.charCodeAt(i) & 0xff; return a; };
+    var ttl = String(title || '').replace(/[^\x20-\x7e]/g, '').replace(/[()\\]/g, '');
+    var content = 'q ' + dw.toFixed(2) + ' 0 0 ' + dh.toFixed(2) + ' ' + x.toFixed(2) + ' ' + y.toFixed(2) + ' cm /Im0 Do Q';
+    var parts = [], offsets = [], len = 0;
+    var push = function (u) { parts.push(u); len += u.length; };
+    push(enc('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n'));
+    var obj = function (n, body, stream) {
+      offsets[n] = len;
+      push(enc(n + ' 0 obj\n' + body + (stream ? '\nstream\n' : '\nendobj\n')));
+      if (stream) { push(stream); push(enc('\nendstream\nendobj\n')); }
+    };
+    obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+    obj(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+    obj(3, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + PW + ' ' + PH + '] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>');
+    obj(4, '<< /Type /XObject /Subtype /Image /Width ' + w + ' /Height ' + h + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + jpg.length + ' >>', jpg);
+    obj(5, '<< /Length ' + content.length + ' >>', enc(content));
+    obj(6, '<< /Title (' + ttl + ') /Producer (The Little Wings) >>');
+    var xref = len, rows = ['xref', '0 7', '0000000000 65535 f '];
+    for (var i = 1; i <= 6; i++) rows.push(String(offsets[i]).padStart(10, '0') + ' 00000 n ');
+    push(enc(rows.join('\n') + '\ntrailer\n<< /Size 7 /Root 1 0 R /Info 6 0 R >>\nstartxref\n' + xref + '\n%%EOF\n'));
+    var out = new Uint8Array(len), o = 0;
+    parts.forEach(function (u) { out.set(u, o); o += u.length; });
+    return out;
+  }
+
+  /* ---------- share the real file (WhatsApp etc.), or save it ---------- */
+  function canShareFiles(type) {
+    try { return !!(navigator.share && navigator.canShare && navigator.canShare({ files: [mkFile(new Blob(['x'], { type: type || 'image/png' }), type === 'application/pdf' ? 'x.pdf' : 'x.png', type || 'image/png')] })); } catch (e) { return false; }
   }
   function download(blob, name) {
     var url = URL.createObjectURL(blob), a = document.createElement('a');
-    a.href = url; a.download = name; document.body.appendChild(a); a.click();
-    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);
+    a.href = url; a.download = name || blob.name || 'file'; a.rel = 'noopener'; document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 4000);
     return 'downloaded';
   }
+  // Files are made in advance when a receipt opens, so the Share tap can open the share sheet at once
+  // (phones only allow the share sheet straight after a tap).
+  var cache = {};
+  function prepare(key, make) {
+    if (!cache[key]) {
+      var e = cache[key] = { file: null, p: null };
+      e.p = Promise.resolve().then(make).then(function (f) { e.file = f; return f; }, function (err) { delete cache[key]; throw err; });
+    }
+    return cache[key].p;
+  }
+  function ready(key) { return cache[key] && cache[key].file; }
+  function forget(prefix) { Object.keys(cache).forEach(function (k) { if (!prefix || k.indexOf(prefix) === 0) delete cache[k]; }); }
+  /* o = { key, make: () => Promise<File>, type: 'image/png'|'application/pdf', title, text, waUrl,
+   *       save: true to always save instead of share, toast: (msg, kind) => void, msgs: {…} }
+   * resolves 'shared' | 'cancelled' | 'retry' | 'saved-wa' | 'downloaded' | 'error' */
+  function shareDoc(o) {
+    var M = Object.assign({ savedWa: 'Saved — attach it in WhatsApp', saved: 'Saved', retry: 'Ready — tap Share again', fail: 'Could not make the file' }, o.msgs || {});
+    var say = o.toast || function () {};
+    var got = ready(o.key), getFile = function () { return got ? Promise.resolve(got) : prepare(o.key, o.make); };
+    if (o.save) return getFile().then(function (f) { download(f, f.name); say(M.saved); return 'downloaded'; }, function (e) { say(M.fail + ': ' + (e && e.message || e), 'err'); return 'error'; });
+    if (canShareFiles(o.type)) {
+      return getFile().then(function (f) {
+        if (!navigator.canShare({ files: [f] })) { download(f, f.name); say(M.saved); return 'downloaded'; }
+        var data = { files: [f], title: o.title || f.name };
+        if (o.text) data.text = o.text;
+        return navigator.share(data).then(function () { return 'shared'; }, function (e) {
+          if (e && e.name === 'AbortError') return 'cancelled';           // closed the share sheet: no error
+          if (e && e.name === 'NotAllowedError') { say(M.retry); return 'retry'; }  // tap expired while the file was made
+          download(f, f.name); say(M.saved); return 'downloaded';
+        });
+      }, function (e) { say(M.fail + ': ' + (e && e.message || e), 'err'); return 'error'; });
+    }
+    // Computer / browser without file sharing: open WhatsApp now (still inside the tap), then save the file.
+    if (o.waUrl) { try { window.open(o.waUrl, '_blank', 'noopener'); } catch (e) { /* ignore */ } }
+    return getFile().then(function (f) { download(f, f.name); say(o.waUrl ? M.savedWa : M.saved); return o.waUrl ? 'saved-wa' : 'downloaded'; }, function (e) { say(M.fail + ': ' + (e && e.message || e), 'err'); return 'error'; });
+  }
+  // Kept for older screens: share the picture on phones, save it elsewhere.
+  function saveImage(r, filename) {
+    var name = filename || ('Receipt-' + (r.receiptNo || 'LW'));
+    return shareDoc({ key: 'old|' + name, make: function () { return receiptCanvas(r).then(function (c) { return imageFile(c, name); }); }, type: 'image/png', title: 'Fee receipt ' + (r.receiptNo || '') });
+  }
 
-  window.LWReceipt = { html: html, text: text, print: print, png: png, saveImage: saveImage, inWords: inWords, amountWords: amountWords, period: period, fmtDate: fmtDate, inr: inr };
+  window.LWReceipt = { html: html, text: text, print: print, png: png, saveImage: saveImage, receiptCanvas: receiptCanvas, docCanvas: docCanvas, imageFile: imageFile, pdfFile: pdfFile, pdfBytes: pdfBytes, shareDoc: shareDoc, prepare: prepare, ready: ready, forget: forget, canShareFiles: canShareFiles, download: download, inWords: inWords, amountWords: amountWords, period: period, fmtDate: fmtDate, inr: inr };
 })();
