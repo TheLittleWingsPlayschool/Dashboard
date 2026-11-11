@@ -1,5 +1,5 @@
 /*!
- * Little Wings Parents (v1.5.0) — attendance, homework & daily updates, timetable,
+ * Little Wings Parents (v1.6.0) — attendance, homework & daily updates, timetable,
  * report cards, gallery, notices, holidays, fee receipts, feedback and phone alerts.
  * Plain static app, no build step. Talks to the school's Supabase project with
  * the PUBLIC publishable key only; what a parent can see is decided by the
@@ -11,7 +11,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.5.0';
+  var VERSION = '1.6.0';
   // Part B (language toggle + phone alerts): on since v1.5.0.
   var PART_B = true;
   var TZ = 'Asia/Kolkata';
@@ -48,6 +48,7 @@
    * shared with the staff dashboard on this phone) and per login (user_metadata). */
   var I18N = {
     te: {
+      'You have unsaved changes': 'మీ మార్పులు ఇంకా సేవ్ కాలేదు', 'Send your message before you leave?': 'వెళ్లే ముందు మీ సందేశాన్ని పంపాలా?', 'Keep editing': 'సవరణ కొనసాగించండి', 'Discard': 'వదిలేయండి',
       'Little Wings Parents': 'లిటిల్ వింగ్స్ పేరెంట్స్',
       'Welcome! See your child’s attendance, homework, fee receipts and school notices.': 'స్వాగతం! మీ పిల్లల హాజరు, హోంవర్క్, ఫీజు రసీదులు మరియు పాఠశాల నోటీసులు ఇక్కడ చూడండి.',
       'Mobile number': 'మొబైల్ నంబర్', 'Password': 'పాస్‌వర్డ్', 'Sign in': 'సైన్ ఇన్', 'Signing in…': 'సైన్ ఇన్ అవుతోంది…',
@@ -141,6 +142,7 @@
       'Not found.': 'కనిపించలేదు.', 'Connect to the internet to see this.': 'ఇది చూడటానికి ఇంటర్నెట్‌కు కనెక్ట్ చేయండి.'
     },
     hi: {
+      'You have unsaved changes': 'आपके बदलाव अभी सेव नहीं हुए हैं', 'Send your message before you leave?': 'जाने से पहले अपना संदेश भेजें?', 'Keep editing': 'बदलाव जारी रखें', 'Discard': 'छोड़ दें',
       'Little Wings Parents': 'लिटिल विंग्स पेरेंट्स',
       'Welcome! See your child’s attendance, homework, fee receipts and school notices.': 'स्वागत है! अपने बच्चे की हाज़िरी, होमवर्क, फ़ीस रसीदें और स्कूल की सूचनाएँ यहाँ देखें।',
       'Mobile number': 'मोबाइल नंबर', 'Password': 'पासवर्ड', 'Sign in': 'साइन इन', 'Signing in…': 'साइन इन हो रहा है…',
@@ -925,25 +927,62 @@
   }
   function bindFeedback() {
     var f = $('#fb-form'); if (!f) return;
-    f.addEventListener('submit', function (e) {
-      e.preventDefault();
-      $$('.err', f).forEach(function (x) { x.remove(); }); $$('.invalid', f).forEach(function (x) { x.classList.remove('invalid'); });
-      var msg = f.msg.value.trim(), sid = f.sid.value;
-      if (msg.length < 3) return fieldErr(f, 'msg', t('Please write at least 3 characters.'));
-      if (navigator.onLine === false) return fieldErr(f, 'msg', t('No internet. Please try again.'));
-      var btn = $('button.primary', f); btn.disabled = true; btn.textContent = t('Sending…');
-      SB.rpc('parent_feedback_send', { p_student: sid, p_message: msg }).then(function (r) {
-        if (r.error) throw r.error;
-        toast(t('Message sent. The school will reply here.'));
-        f.msg.value = '';
-        return loadFeedback().then(function () { saveCache(); render(); });
-      }).catch(function (err) {
-        btn.disabled = false; btn.textContent = '📨 ' + t('Send');
-        var m = (err && err.message) || '', hit = FB_ERR.filter(function (x) { return x[0].test(m); })[0];
-        fieldErr(f, 'msg', hit ? t(hit[1]) : isNetErr(err) ? t('No internet. Please try again.') : t('Could not send. Please try again.'));
-      });
+    f.addEventListener('submit', function (e) { e.preventDefault(); sendFeedback(f); });
+  }
+  // Resolves true when the message was sent, false when it stayed (with the reason shown under the box).
+  function sendFeedback(f) {
+    if (f.__sending) return Promise.resolve(false);
+    $$('.err', f).forEach(function (x) { x.remove(); }); $$('.invalid', f).forEach(function (x) { x.classList.remove('invalid'); });
+    var msg = f.msg.value.trim(), sid = f.sid.value;
+    if (msg.length < 3) { fieldErr(f, 'msg', t('Please write at least 3 characters.')); return Promise.resolve(false); }
+    if (navigator.onLine === false) { fieldErr(f, 'msg', t('No internet. Please try again.')); return Promise.resolve(false); }
+    var btn = $('button.primary', f); btn.disabled = true; btn.textContent = t('Sending…'); f.__sending = true;
+    return SB.rpc('parent_feedback_send', { p_student: sid, p_message: msg }).then(function (r) {
+      if (r.error) throw r.error;
+      f.__sending = false;
+      toast(t('Message sent. The school will reply here.'));
+      f.msg.value = '';
+      loadFeedback().then(function () { saveCache(); render(); });
+      return true;
+    }).catch(function (err) {
+      f.__sending = false;
+      btn.disabled = false; btn.textContent = '📨 ' + t('Send');
+      var m = (err && err.message) || '', hit = FB_ERR.filter(function (x) { return x[0].test(m); })[0];
+      fieldErr(f, 'msg', hit ? t(hit[1]) : isNetErr(err) ? t('No internet. Please try again.') : t('Could not send. Please try again.'));
+      return false;
     });
   }
+  /* v1.6: a typed, unsent feedback message is never dropped silently. */
+  function fbDirty() { var f = $('#fb-form'); return !!(f && tab === 'feedback' && f.msg && f.msg.value.trim()); }
+  var askOpen = null;
+  function askUnsaved() {
+    if (askOpen) return askOpen;
+    var back = document.activeElement, root = document.createElement('div');
+    root.id = 'unsaved-root'; document.body.appendChild(root);
+    askOpen = new Promise(function (resolve) {
+      root.innerHTML = '<div class="ask-bg"><div class="ask" role="alertdialog" aria-modal="true" aria-labelledby="ask-h" aria-describedby="ask-p"><h3 id="ask-h">⚠️ ' + esc(t('You have unsaved changes')) + '</h3><p id="ask-p">' + esc(t('Send your message before you leave?')) + '</p>' +
+        '<div class="ask-actions"><button type="button" class="btn primary" data-u="save">📨 ' + esc(t('Send')) + '</button><button type="button" class="btn ghost keep" data-u="keep">✏️ ' + esc(t('Keep editing')) + '</button><button type="button" class="btn danger-o" data-u="discard">🗑️ ' + esc(t('Discard')) + '</button></div></div></div>';
+      var btns = $$('[data-u]', root);
+      var finish = function (v) { document.removeEventListener('keydown', onKey, true); root.remove(); askOpen = null; if (v === 'keep' && back && back.isConnected) { try { back.focus(); } catch (e) { /* ignore */ } } resolve(v); };
+      var onKey = function (e) {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish('keep'); }
+        else if (e.key === 'Tab') { e.preventDefault(); var i = btns.indexOf(document.activeElement); btns[(i + (e.shiftKey ? btns.length - 1 : 1)) % btns.length].focus(); }
+      };
+      document.addEventListener('keydown', onKey, true);
+      btns.forEach(function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); finish(b.getAttribute('data-u')); }); });
+      $('.ask-bg', root).addEventListener('click', function (e) { if (e.target === e.currentTarget) finish('keep'); });
+      $('[data-u=keep]', root).focus();
+    });
+    return askOpen;
+  }
+  function guardFb(proceed) {
+    if (!fbDirty()) { proceed(); return; }
+    askUnsaved().then(function (c) {
+      if (c === 'discard') { var f = $('#fb-form'); if (f) f.msg.value = ''; proceed(); }
+      else if (c === 'save') sendFeedback($('#fb-form')).then(function (ok) { if (ok) proceed(); });
+    });
+  }
+  window.addEventListener('beforeunload', function (e) { if (fbDirty()) { e.preventDefault(); e.returnValue = ''; } });
 
   /* ---------- phone alerts (Web Push) ----------
    * Opt-in only. The subscription is stored through push_subscribe (own row,
@@ -1120,7 +1159,7 @@
   }
   var ACTS = {
     pw: function (el) { var i = el.parentNode.querySelector('input'); var show = i.type === 'password'; i.type = show ? 'text' : 'password'; el.textContent = show ? '🙈' : '👁️'; el.setAttribute('aria-label', show ? t('Hide password') : t('Show password')); },
-    tab: function (el) { closeSheet(); go(el.getAttribute('data-tab')); },
+    tab: function (el) { var tb = el.getAttribute('data-tab'); if (tb === tab) { closeSheet(); go(tb); return; } guardFb(function () { closeSheet(); go(tb); }); },
     kid: function (el) {
       S.cur = el.getAttribute('data-id'); ttDay = -1; saveCache(); render(); var k = child();
       if (k && online) Promise.all([rpcAttendance(k.id, thisMonth()), rpcFees(k.id), loadPosts(k.id), S.month !== thisMonth() ? rpcAttendance(k.id, S.month) : null]).then(function () { inflight['posts:' + k.id + ':done'] = true; saveCache(); render(); }).catch(function (e) { if (isNetErr(e)) { online = false; render(); } });
@@ -1152,7 +1191,7 @@
     'alert-hide': function () { lsSet('lwp_alert_hide', true); render(); },
     'sheet-close': closeSheet,
     'sheet-bg': function (el, e) { if (e.target === el) closeSheet(); },
-    signout: function () { signOut(); },
+    signout: function () { guardFb(function () { signOut(); }); },
     install: function () { if (!deferredInstall) return; var ev = deferredInstall; deferredInstall = null; ev.prompt(); ev.userChoice.finally(function () { var w = $('#install-btn-wrap'); if (w) w.hidden = true; }); }
   };
   document.addEventListener('click', function (e) {
@@ -1217,7 +1256,7 @@
     try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
   }
 
-  window.addEventListener('hashchange', function () { if (!S || !/[#&]tab=/.test(location.hash)) return; tabFromHash(); closeSheet(); go(tab); });
+  window.addEventListener('hashchange', function () { if (!S || !/[#&]tab=/.test(location.hash)) return; guardFb(function () { tabFromHash(); closeSheet(); go(tab); }); });
 
   /* ---------- boot ---------- */
   window.__lwp = { version: VERSION, state: function () { return S; }, lang: function () { return LANG; }, t: t, go: function (x) { go(x); }, push: PUSH };

@@ -309,3 +309,13 @@ img[data-p]:not([src]) { visibility: hidden; }
   #print-root.rc-print .rc-head h1 { font-size: 15pt; } #print-root.rc-print .rc-title { font-size: 13pt; }
   #print-root.rc-print .rc-sign { margin-top: 18mm; }
 }
+
+/* v1.6: unsaved message dialog */
+.ask-bg { position: fixed; inset: 0; z-index: 90; background: rgba(28,44,62,.45); display: flex; align-items: center; justify-content: center; padding: 1rem; }
+.ask { background: #fff; border-radius: 22px; padding: 1.2rem 1.1rem; width: 100%; max-width: 400px; box-shadow: 0 12px 40px rgba(0,0,0,.2); }
+.ask h3 { margin: 0 0 .35rem; font-size: 1.05rem; }
+.ask p { margin: 0 0 1rem; color: var(--muted); }
+.ask-actions { display: grid; gap: .55rem; }
+.ask-actions .btn { width: 100%; min-height: 46px; justify-content: center; }
+.ask-actions .keep:focus { outline: 3px solid var(--coral); outline-offset: 2px; }
+.btn.danger-o { background: #fff; color: var(--coral-d); border: 2px solid var(--coral); }

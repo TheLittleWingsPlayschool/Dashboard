@@ -632,3 +632,18 @@ details summary { cursor: pointer; font-weight: 700; }
 #sw-update { width: max-content; max-width: 92vw; text-align: center; top: auto; bottom: calc(var(--nav-h) + .6rem + env(safe-area-inset-bottom)); }
 @media (min-width: 960px) { #sw-update { bottom: 1.2rem; } }
 body:has(#sw-update:not([hidden])) .view { padding-bottom: calc(var(--nav-h) + 5rem + env(safe-area-inset-bottom)); }
+
+/* ---------- v2.8: unsaved-changes dialog + saving state ---------- */
+.modal.unsaved { max-width: 420px; }
+.modal.unsaved h3 { margin: 0 0 .35rem; font-size: 1.08rem; }
+.modal.unsaved p { margin: 0 0 1rem; color: var(--muted); }
+.unsaved-actions { display: grid; grid-template-columns: 1fr; gap: .55rem; }
+.unsaved-actions .btn { width: 100%; justify-content: center; min-height: 46px; }
+.unsaved-actions .keep:focus-visible, .unsaved-actions .keep:focus { outline: 3px solid var(--sky); outline-offset: 2px; }
+.btn.danger-o { background: #fff; color: var(--coral-d); border: 2px solid var(--coral); }
+.btn.danger-o:hover { background: #fff3f1; }
+@media (min-width: 520px) {
+  .unsaved-actions { grid-template-columns: 1fr 1fr 1fr; }
+  .unsaved-actions .btn { padding-left: .5rem; padding-right: .5rem; }
+}
+.btn.saving { opacity: .8; cursor: progress; }

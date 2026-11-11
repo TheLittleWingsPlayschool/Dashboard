@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.7.1';
+  var APP_VERSION = '2.8.0';
   // Part B (language toggle + phone alerts): on since v2.7.0.
   var PART_B = true;
   var PARENT_DOMAIN = 'parents.littlewings.app';
@@ -753,39 +753,58 @@
     setTimeout(function () { el.classList.add('out'); }, 2800);
     setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 3300);
   }
-  var modalSubmit = null;
+  var modalSubmit = null, modalForm = null, modalSaving = false;
   function openModal(opts) {
+    // v2.8: never silently drop typed changes in the modal that is open now.
+    if (typeof dirtyItems === 'function' && $('#modal-root').innerHTML && dirtyItems('modal').length) { guardLeave('modal', function () { openModal(opts); }); return; }
     var root = $('#modal-root');
     root.innerHTML = '<div class="modal-backdrop" data-act="modal-bg"><div class="modal ' + (opts.size || '') + '" role="dialog" aria-modal="true" aria-label="' + esc(opts.title) + '">' +
-      '<div class="modal-head"><h2>' + esc(opts.title) + '</h2><button type="button" class="icon-btn close" data-act="modal-close" aria-label="Close">✕</button></div>' +
+      '<div class="modal-head"><h2>' + esc(opts.title) + '</h2><button type="button" class="icon-btn close" data-act="modal-close" aria-label="' + esc(t('Close')) + '">✕</button></div>' +
       '<div class="modal-body">' + opts.body + '</div></div></div>';
     document.body.classList.add('modal-open');
-    modalSubmit = opts.onSubmit || null;
-    var form = $('form', root);
-    if (form) {
-      form.addEventListener('submit', function (e) {
-        e.preventDefault();
-        if (!modalSubmit) return;
-        clearErrors(form);
-        var btn = $('button.primary', form);
-        if (btn) btn.disabled = true;
-        Promise.resolve().then(function () { return modalSubmit(form, new FormData(form)); }).then(function (res) {
-          if (btn) btn.disabled = false;
-          if (res !== false) closeModal();
-        }).catch(function (err) {
-          if (btn) btn.disabled = false;
-          console.error(err);
-          toast('Something went wrong: ' + err.message, 'err');
-        });
-      });
-    }
+    modalSubmit = opts.onSubmit || null; modalSaving = false;
+    var form = modalSubmit ? $('form', root) : null;
+    modalForm = form;
+    if (form) form.addEventListener('submit', function (e) { e.preventDefault(); submitModalForm(); });
+    else $$('form:not([data-form])', root).forEach(function (f) { f.addEventListener('submit', function (e) { e.preventDefault(); }); });
     if (opts.mount) opts.mount(root);
+    snapForms(root); resnapSoon(root);
     var first = $('input:not([type=hidden]):not([disabled]), select, textarea', root);
     if (first && window.matchMedia('(min-width: 700px)').matches) first.focus();
   }
+  // Runs the open modal's save. Resolves true when it saved (and closed), false when it stayed open.
+  function submitModalForm() {
+    var form = modalForm;
+    if (!form || !modalSubmit || !form.isConnected) return Promise.resolve(false);
+    if (modalSaving) return Promise.resolve(false);
+    modalSaving = true;
+    clearErrors(form);
+    var done = busyButton($('button.primary', form));
+    var fn = modalSubmit;
+    form.__lwSaving = true;
+    return Promise.resolve().then(function () { return fn(form, new FormData(form)); }).then(function (res) {
+      form.__lwSaving = false; modalSaving = false; done();
+      var ok = res !== false && !(form.isConnected && $('.invalid', form));
+      if (ok && modalForm === form) closeModal();
+      return ok;
+    }).catch(function (err) {
+      form.__lwSaving = false; modalSaving = false; done();
+      console.error(err);
+      toast('Something went wrong: ' + err.message, 'err');
+      return false;
+    });
+  }
+  // Disables a save button and shows "Saving…" until the returned function is called.
+  function busyButton(btn) {
+    if (!btn) return function () {};
+    var html = btn.innerHTML;
+    btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.classList.add('saving');
+    btn.textContent = '⏳ ' + t('Saving…');
+    return function () { if (!btn.isConnected) return; btn.disabled = false; btn.removeAttribute('aria-busy'); btn.classList.remove('saving'); btn.innerHTML = html; };
+  }
   function closeModal() {
     $('#modal-root').innerHTML = '';
-    modalSubmit = null;
+    modalSubmit = null; modalForm = null; modalSaving = false;
     document.body.classList.remove('modal-open');
   }
   function confirmBox(message, opts) {
@@ -1228,6 +1247,7 @@
     $('#page-title').textContent = routeTitle(key);
     document.title = routeTitle(key) + ' · The Little Wings';
     var view = $('#view');
+    var keepTyped = (key + '/' + p.arg) === UI.lastRoute ? captureDirty(view) : null;
     try {
       view.innerHTML = ROUTES[key].render(p.arg);
     } catch (e) {
@@ -1236,6 +1256,9 @@
     }
     hydratePhotos(view);
     hydrateMedia(view);
+    if (keepTyped) restoreDirty(view, keepTyped);
+    snapForms(view); if (!keepTyped) resnapSoon(view);
+    NAV.cur = location.hash;
     var routeId = key + '/' + p.arg;
     if (routeId !== UI.lastRoute) { window.scrollTo(0, 0); UI.lastRoute = routeId; }
   }
@@ -1777,12 +1800,12 @@
   }
   function saveAttendance() {
     var cid = UI.attClass, date = UI.attDate, dr = getDraft(cid, date);
-    if (date > todayISO()) { toast('Can’t mark attendance for a future date', 'err'); return; }
+    if (date > todayISO()) { toast('Can’t mark attendance for a future date', 'err'); return Promise.resolve(false); }
     var list = activeStudents(cid);
     var marked = list.filter(function (s) { return dr.data[s.id]; }).length;
     var go = marked < list.length ? confirmBox((list.length - marked) + ' student(s) are not marked yet. Save anyway?', { ok: 'Save', danger: false, title: 'Some students unmarked' }) : Promise.resolve(true);
-    go.then(function (ok) {
-      if (!ok) return;
+    return go.then(function (ok) {
+      if (!ok) return false;
       var rec = Object.assign({}, attFor(date));
       list.forEach(function (s) { if (dr.data[s.id]) rec[s.id] = dr.data[s.id]; else delete rec[s.id]; });
       if (Object.keys(rec).length) S.attendance[date] = rec; else delete S.attendance[date];
@@ -1791,6 +1814,7 @@
       toast('Attendance saved for ' + className(cid) + ' · ' + fmtDate(date) + ' ✅');
       render();
       if (date === todayISO() && list.some(function (s) { return rec[s.id] === 'A'; })) pushNotify('absent', { day: date, classId: cid });
+      return true;
     });
   }
   function monthGridHTML(cid, ym) {
@@ -3952,12 +3976,12 @@
     if (!isMonth(fromMonth)) return fieldError(f, 'fromMonth', 'Choose the month');
     var newFee = {}; CLASSES.forEach(function (c) { var v = String(fd.get('fee|' + c.id) || '').trim(); if (v !== '' && num(v) >= 0) newFee[c.id] = num(v); });
     var plan = fd.getAll('sid').map(String).map(function (id) { var s = studentById(id); var to = String(fd.get('to|' + id) || ''); return s && (CLASS_BY_ID[to] || to === 'left') ? { s: s, to: to } : null; }).filter(Boolean);
-    if (!plan.length) { toast('Choose at least one student', 'err'); return; }
+    if (!plan.length) { toast('Choose at least one student', 'err'); return false; }
     var counts = {};
     plan.forEach(function (x) { var k = className(x.s.classId) + ' → ' + (x.to === 'left' ? 'Left' : className(x.to)); counts[k] = (counts[k] || 0) + 1; });
     var summary = Object.keys(counts).map(function (k) { return k + ': ' + counts[k]; }).join(' · ');
     return confirmBox(plan.length + ' students → ' + toYear + '. ' + summary + '. Fees: ' + (mode === 'carry' ? 'carry over' : 'new yearly fee where set') + ', from ' + fmtMonth(fromMonth) + '. You can undo this afterwards.', { ok: t('Promote students'), danger: false, title: 'Preview' }).then(function (ok) {
-      if (!ok) return;
+      if (!ok) return false;
       var fromYear = academicYear(), until = addMonths(fromMonth, -1);
       var batch = { id: 'pr-' + uid(), at: new Date().toISOString(), by: ME.name, fromYear: fromYear, toYear: toYear, fromMonth: fromMonth, feeMode: mode, items: [] };
       plan.forEach(function (x) {
@@ -4239,7 +4263,7 @@
       });
     },
     'tt-edit': function () { UI.ttEdit = b2Class('ttClass'); render(); },
-    'tt-cancel': function () { UI.ttEdit = null; render(); },
+    'tt-cancel': function () { guardLeave('page', function () { UI.ttEdit = null; render(); }); },
     'tt-row-add': function () { var box = document.getElementById('tt-periods'); if (box && box.children.length < 12) box.insertAdjacentHTML('beforeend', ttPeriodHTML(null)); },
     'tt-row-del': function (el) { var p = el.closest('.tt-period'); if (p) p.parentNode.removeChild(p); },
     'exam-add': function () { openExamForm(null); },
@@ -4348,7 +4372,7 @@
     'select-all': function (el) { try { el.select(); } catch (e) { /* ignore */ } }
   };
   var B2_CHANGES = {
-    'b2-class': function (el) { UI[attr(el, 'key')] = el.value; UI.ttEdit = null; render(); },
+    'b2-class': function (el) { var key = attr(el, 'key'), v = el.value; el.value = UI[key] || el.value; guardLeave('page', function () { UI[key] = v; UI.ttEdit = null; render(); }); },
     'lang': function (el) { setLang(el.value); },
     'exam-publish': function (el) {
       var e = examById(attr(el, 'id')); if (!e || !isAdmin()) return;
@@ -4387,7 +4411,7 @@
         if (old && JSON.stringify(old.marks) === JSON.stringify(marks) && (old.remarks || '') === remarks) return;
         S.marks = S.marks.filter(function (m) { return m.id !== id && !(m.examId === e.id && m.studentId === s.id); }).concat([rec]); n++;
       });
-      if (bad) { toast(bad, 'err'); return; }
+      if (bad) { toast(bad, 'err'); return false; }
       persist('marks'); toast(n ? 'Marks saved for ' + n + ' student' + (n === 1 ? '' : 's') : 'No changes'); render();
     },
     'doc-upload': function (f, fd) {
@@ -4423,11 +4447,164 @@
   Object.keys(B2_FORMS).forEach(function (k) { FORMS[k] = B2_FORMS[k]; });
 
   /* =====================================================================
+   * v2.8 UNSAVED-CHANGES GUARD (one place for every form)
+   * A form is "dirty" when its named fields differ from the values it was
+   * shown with. Leaving it (Cancel, ✕, Esc, backdrop, Back, menu, another
+   * page, sign out, closing the tab) asks: Save · Keep editing · Discard.
+   * ===================================================================== */
+  var NOGUARD_FORMS = { 'audit-filter': 1, 'id-print': 1 };   // filters / print pickers, nothing to save
+  var NAV = { cur: location.hash, skip: false };
+  function guardFields(f) {
+    return $$('input[name], select[name], textarea[name]', f).filter(function (el) {
+      return el.type !== 'submit' && el.type !== 'button' && el.type !== 'reset' && !el.hasAttribute('data-nodirty');
+    });
+  }
+  function fieldVal(el) {
+    if (el.type === 'checkbox' || el.type === 'radio') return el.checked ? '1' : '0';
+    if (el.type === 'file') return Array.prototype.map.call(el.files || [], function (x) { return x.name + ':' + x.size; }).join('|');
+    if (el.multiple && el.options) return Array.prototype.filter.call(el.options, function (o) { return o.selected; }).map(function (o) { return o.value; }).join('|');
+    return el.value;
+  }
+  function formSnap(f) { return JSON.stringify(guardFields(f).map(function (el) { return el.name + '=' + fieldVal(el); })); }
+  function guardable(f) { if (!f || f.hasAttribute('data-noguard') || f.closest('#auth-screen')) return false; var k = f.getAttribute('data-form'); return !(k && NOGUARD_FORMS[k]); }
+  function markClean(f) { if (f) f.__lwSnap = formSnap(f); }
+  function snapForms(root) { $$('form', root).forEach(function (f) { if (f.__lwSnap == null) markClean(f); }); }
+  // Values a page fills in by itself right after opening (auto amounts, defaults) are not "changes".
+  document.addEventListener('input', function (e) { var f = e.isTrusted && e.target && e.target.closest && e.target.closest('form'); if (f) f.__lwTouched = true; }, true);
+  document.addEventListener('change', function (e) { var f = e.isTrusted && e.target && e.target.closest && e.target.closest('form'); if (f) f.__lwTouched = true; }, true);
+  function resnapSoon(root) { setTimeout(function () { $$('form', root).forEach(function (f) { if (!f.__lwTouched && !f.__lwSaving) markClean(f); }); }, 350); }
+  function isDirtyForm(f) { return !!f && f.isConnected && guardable(f) && f.__lwSnap != null && formSnap(f) !== f.__lwSnap; }
+  // Forms added after a render (e.g. the documents box) get their snapshot before the first keystroke.
+  document.addEventListener('focusin', function (e) { var f = e.target && e.target.closest && e.target.closest('form'); if (f && f.__lwSnap == null) markClean(f); }, true);
+  function formKey(f, all) {
+    var k = (f.getAttribute('data-form') || '') + '|' + (f.getAttribute('data-id') || '');
+    return k + '|' + all.filter(function (x) { return ((x.getAttribute('data-form') || '') + '|' + (x.getAttribute('data-id') || '')) === k; }).indexOf(f);
+  }
+  // Same-page re-renders (sync from another phone, a toggle elsewhere on the page) keep what was typed.
+  function captureDirty(root) {
+    var all = $$('form', root), out = {};
+    all.forEach(function (f) {
+      if (f.__lwSaving || !isDirtyForm(f)) return;
+      var fl = guardFields(f);
+      out[formKey(f, all)] = { snap: f.__lwSnap, names: fl.map(function (el) { return el.name; }).join(','), vals: fl.map(function (el) { return (el.type === 'checkbox' || el.type === 'radio') ? el.checked : el.type === 'file' ? null : el.value; }) };
+    });
+    return Object.keys(out).length ? out : null;
+  }
+  function restoreDirty(root, saved) {
+    var all = $$('form', root);
+    all.forEach(function (f) {
+      var s0 = saved[formKey(f, all)]; if (!s0) return;
+      var fl = guardFields(f);
+      if (fl.map(function (el) { return el.name; }).join(',') !== s0.names) return;
+      fl.forEach(function (el, i) { var v = s0.vals[i]; if (v === null) return; if (el.type === 'checkbox' || el.type === 'radio') el.checked = !!v; else el.value = v; });
+      f.__lwSnap = s0.snap;
+    });
+  }
+  // What would be lost: 'modal' (the open pop-up), 'page' (the page behind it), or 'all'.
+  function dirtyItems(scope) {
+    var items = [];
+    if (scope !== 'page') $$('#modal-root form').forEach(function (f) {
+      if (!isDirtyForm(f)) return;
+      if (f === modalForm) items.push({ save: submitModalForm });
+      else if (f.getAttribute('data-form')) items.push({ save: function () { return submitPageForm(f); } });
+      else items.push({ save: function () { return Promise.resolve(true); } });
+    });
+    if (scope !== 'modal') {
+      $$('#view form').forEach(function (f) { if (isDirtyForm(f) && f.getAttribute('data-form')) items.push({ save: function () { return submitPageForm(f); }, discard: function () { markClean(f); } }); });
+      var route = parseHash().name;
+      if (route === 'attendance' && anyDirty()) items.push({ save: saveAllAttendance, discard: function () { Object.keys(UI.drafts).forEach(function (k) { if (UI.drafts[k].dirty) delete UI.drafts[k]; }); } });
+      if (route === 'staff' && UI.sattDraft && UI.sattDraft.dirty) items.push({ save: function () { ACTIONS['satt-save'](); return Promise.resolve(!(UI.sattDraft && UI.sattDraft.dirty)); }, discard: function () { UI.sattDraft = null; } });
+    }
+    return items;
+  }
+  function saveAllAttendance() {
+    var keys = Object.keys(UI.drafts).filter(function (k) { return UI.drafts[k].dirty; });
+    var cur = UI.attClass, day = UI.attDate;
+    // save the one on screen first, then any other class/date left unsaved
+    keys.sort(function (a) { return a === draftKey(cur, day) ? -1 : 1; });
+    return keys.reduce(function (p, k) {
+      return p.then(function (ok) { if (!ok) return false; var parts = k.split('|'); UI.attClass = parts[0]; UI.attDate = parts[1]; return saveAttendance(); });
+    }, Promise.resolve(true)).then(function (ok) { if (ok) { UI.attClass = cur; UI.attDate = day; } return ok; });
+  }
+  var unsavedOpen = null;
+  // The three-button question. Resolves 'save' | 'keep' | 'discard'.
+  function unsavedDialog() {
+    if (unsavedOpen) return unsavedOpen;
+    var root = $('#confirm-root'), back = document.activeElement;
+    unsavedOpen = new Promise(function (resolve) {
+      root.innerHTML = '<div class="modal-backdrop confirm unsaved-bg"><div class="modal small unsaved" role="alertdialog" aria-modal="true" aria-labelledby="unsaved-h" aria-describedby="unsaved-p"><div class="modal-body">' +
+        '<h3 id="unsaved-h">⚠️ ' + esc(t('You have unsaved changes')) + '</h3><p id="unsaved-p">' + esc(t('Save them before you leave?')) + '</p>' +
+        '<div class="unsaved-actions">' +
+        '<button type="button" class="btn primary" data-u="save">💾 ' + esc(t('Save')) + '</button>' +
+        '<button type="button" class="btn ghost keep" data-u="keep" data-c="0">✏️ ' + esc(t('Keep editing')) + '</button>' +
+        '<button type="button" class="btn danger-o" data-u="discard">🗑️ ' + esc(t('Discard')) + '</button>' +
+        '</div></div></div></div>';
+      var box = $('.unsaved', root), btns = $$('[data-u]', root);
+      var finish = function (v) {
+        root.innerHTML = ''; unsavedOpen = null;
+        if (v === 'keep' && back && back.isConnected && back.focus) { try { back.focus(); } catch (e) { /* ignore */ } }
+        resolve(v);
+      };
+      btns.forEach(function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); finish(b.getAttribute('data-u')); }); });
+      // focus trap; Esc = keep editing (handled by the global Esc through data-c="0")
+      box.addEventListener('keydown', function (e) {
+        if (e.key !== 'Tab') return;
+        var i = btns.indexOf(document.activeElement);
+        e.preventDefault();
+        btns[(i + (e.shiftKey ? btns.length - 1 : 1)) % btns.length].focus();
+      });
+      // tapping outside the small box = keep editing
+      $('.unsaved-bg', root).addEventListener('click', function (e) { if (e.target === e.currentTarget) finish('keep'); });
+      $('[data-u=keep]', root).focus();
+    });
+    return unsavedOpen;
+  }
+  // Ask only when something would be lost; otherwise just do it.
+  function guardLeave(scope, proceed) {
+    var items = dirtyItems(scope);
+    if (!items.length) { proceed(); return Promise.resolve(true); }
+    return unsavedDialog().then(function (choice) {
+      if (choice === 'keep') return false;
+      if (choice === 'discard') { items.forEach(function (i) { if (i.discard) i.discard(); }); proceed(); return true; }
+      return items.reduce(function (p, i) { return p.then(function (ok) { return ok ? i.save() : false; }); }, Promise.resolve(true)).then(function (ok) {
+        if (ok) proceed();
+        return ok;
+      });
+    });
+  }
+  function requestCloseModal() { guardLeave('modal', closeModal); }
+  // Page forms (Settings cards, timetable, marks, notices, promotion, documents…).
+  function submitPageForm(f) {
+    var k = f.getAttribute('data-form');
+    if (!k || !FORMS[k] || !f.isConnected) return Promise.resolve(false);
+    if (f.__lwSaving) return Promise.resolve(false);
+    clearErrors(f);
+    var done = busyButton($('button.primary', f) || $('button:not([type=button])', f));
+    f.__lwSaving = true;
+    return Promise.resolve().then(function () { return FORMS[k](f, new FormData(f)); }).then(function (res) {
+      f.__lwSaving = false; done();
+      var ok = res !== false && !(f.isConnected && $('.invalid', f));
+      if (ok && f.isConnected) markClean(f);
+      return ok;
+    }).catch(function (err) {
+      f.__lwSaving = false; done();
+      console.error(err); toast('Something went wrong: ' + err.message, 'err');
+      return false;
+    });
+  }
+  var GUARD_I18N = {
+    te: { 'You have unsaved changes': 'మీ మార్పులు ఇంకా సేవ్ కాలేదు', 'Save them before you leave?': 'వెళ్లే ముందు వాటిని సేవ్ చేయాలా?', 'Keep editing': 'సవరణ కొనసాగించండి', 'Discard': 'వదిలేయండి', 'Saving…': 'సేవ్ అవుతోంది…' },
+    hi: { 'You have unsaved changes': 'आपके बदलाव अभी सेव नहीं हुए हैं', 'Save them before you leave?': 'जाने से पहले इन्हें सेव करें?', 'Keep editing': 'बदलाव जारी रखें', 'Discard': 'छोड़ दें', 'Saving…': 'सेव हो रहा है…' }
+  };
+  Object.keys(GUARD_I18N).forEach(function (l) { if (I18N[l]) Object.keys(GUARD_I18N[l]).forEach(function (k) { if (!I18N[l][k]) I18N[l][k] = GUARD_I18N[l][k]; }); });
+
+  /* =====================================================================
    * EVENTS
    * ===================================================================== */
   function attr(el, k) { return el.getAttribute('data-' + k); }
   var ACTIONS = {
     'logout': function () {
+      if (dirtyItems('all').length && !anyDirty()) { guardLeave('all', function () { ACTIONS.logout(); }); return; }
       var p = Store.pendingCount();
       var msg = anyDirty() ? 'You have unsaved attendance. ' : '';
       if (p) msg += p + ' change(s) have not uploaded yet (no internet?) and will be lost. ';
@@ -4459,8 +4636,8 @@
     },
     'sync-retry': function () { Store.sync(false).then(function () { if (location.hash.indexOf('settings') >= 0) render(); }); },
     'import-legacy': function () { importLegacy(); },
-    'modal-close': closeModal,
-    'modal-bg': function (el, e) { if (e.target === el) closeModal(); },
+    'modal-close': requestCloseModal,
+    'modal-bg': function (el, e) { if (e.target === el) requestCloseModal(); },
     'student-add': function (el) {
       var cid = attr(el, 'class') || (location.hash.indexOf('#/classes') === 0 ? UI.classTab : '');
       openStudentForm(null, cid ? { classId: cid } : null);
@@ -4498,7 +4675,7 @@
       refreshAttUI();
       toast('Everyone marked present — tap Save');
     },
-    'att-save': saveAttendance,
+    'att-save': function () { saveAttendance(); },
     'fee-tab': function (el) { UI.feeTab = attr(el, 'tab'); render(); },
     'pay-add': function (el) { if (isAdmin()) openPaymentForm(attr(el, 'student'), attr(el, 'month')); },
     'pay-del': function (el) {
@@ -4731,8 +4908,8 @@
     'rep-month': function (el) { if (isMonth(el.value)) { UI.repMonth = el.value > thisMonth() ? thisMonth() : el.value; render(); } },
     'satt-date': function (el) {
       if (!isISODate(el.value)) return;
-      if (UI.sattDraft && UI.sattDraft.dirty && !window.confirm('Leave without saving staff attendance?')) { el.value = UI.sattDate; return; }
-      UI.sattDate = el.value > todayISO() ? todayISO() : el.value; UI.sattDraft = null; render();
+      var v = el.value; el.value = UI.sattDate || v;
+      guardLeave('page', function () { UI.sattDate = v > todayISO() ? todayISO() : v; UI.sattDraft = null; render(); });
     },
     'enq-status': function (el) {
       var e = findEnq(attr(el, 'id'));
@@ -4780,21 +4957,22 @@
     var f = e.target, k = f.getAttribute('data-form');
     if (!k || !FORMS[k]) return;
     e.preventDefault();
-    clearErrors(f);
-    var btn = $('button.primary', f);
-    if (btn) btn.disabled = true;
-    Promise.resolve().then(function () { return FORMS[k](f, new FormData(f)); })
-      .catch(function (err) { console.error(err); toast('Something went wrong: ' + err.message, 'err'); })
-      .then(function () { if (btn && btn.isConnected) btn.disabled = false; });
+    submitPageForm(f);
   });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       if ($('#confirm-root').innerHTML) { var c = $('#confirm-root [data-c="0"]'); if (c) c.click(); }
-      else if ($('#modal-root').innerHTML) closeModal();
+      else if ($('#modal-root').innerHTML) requestCloseModal();
     }
   });
-  window.addEventListener('hashchange', function () { closeModal(); render(); });
-  window.addEventListener('beforeunload', function (e) { if (anyDirty()) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('hashchange', function () {
+    var target = location.hash, prev = NAV.cur;
+    if (NAV.skip || !ME || !dirtyItems('all').length) { NAV.skip = false; NAV.cur = target; closeModal(); render(); return; }
+    // Put the address back (Back button / menu link) and ask first.
+    try { history.pushState(null, '', prev || '#/dashboard'); } catch (e) { /* ignore */ }
+    guardLeave('all', function () { NAV.skip = true; if (location.hash === target) { NAV.skip = false; NAV.cur = target; closeModal(); render(); } else location.hash = target; });
+  });
+  window.addEventListener('beforeunload', function (e) { if (anyDirty() || (UI.sattDraft && UI.sattDraft.dirty) || (ME && dirtyItems('all').length)) { e.preventDefault(); e.returnValue = ''; } });
   /* ----- cloud sync wiring ----- */
   var pendingRender = false;
   function userIsTyping() {

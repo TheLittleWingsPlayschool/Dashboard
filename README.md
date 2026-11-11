@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.7.1, cloud) + Parents app (v1.5)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.8, cloud) + Parents app (v1.6)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -209,6 +209,14 @@ Never paste the private key into WhatsApp, email, a chat or this repository. If 
 
 ## v2.7.1 — easier menu
 The menu is grouped into **Daily, Students, Money, School** and **Admin**. On a computer the side menu now scrolls on its own (short laptop screens), and each group can be folded by tapping its heading (remembered on that device; the group of the open page always opens). On a phone the **More** page uses the same groups. The *New version available* bar now sits just above the bottom bar and no longer covers menu items.
+
+## v2.8 — never lose typed changes
+Every form in the dashboard (pop-ups and page forms such as Settings, Timetable, Marks, Notices, Promotion, Documents) remembers the values it was opened with. If something was changed and you try to leave — **Cancel**, **✕**, **Esc**, tapping outside, the phone/browser **Back** button, the menu, another page, switching class/date, **Sign out**, or closing/reloading the tab — a small box asks:
+- **Save** — saves (if something is missing it stays on the form and shows what to fix),
+- **Keep editing** — (selected by default) closes the box only,
+- **Discard** — drops the changes and continues.
+
+If nothing was changed it closes straight away. Unsaved attendance (class and staff) is treated the same way. Save buttons show *Saving…* and cannot be tapped twice. Saving still works offline (it uploads when the internet is back). Labels are in English, తెలుగు and हिन्दी. The Parents app (v1.6) asks the same before leaving a typed, unsent **Feedback** message (Send / Keep editing / Discard).
 
 ## Files
 - `index.html`, `style.css`, `app.js` — the app. `Store` at the top of `app.js` is the only data layer (offline copy + sync).
