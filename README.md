@@ -219,6 +219,8 @@ The menu is grouped into **Daily, Students, Money, School** and **Admin**. On a 
 - Parents app v1.7: the same Share / Share PDF / Save buttons on fee receipts and report cards (English, Telugu, Hindi).
 - ID cards are unchanged (multi-card A4 sheets; still Print / Save as PDF).
 
+- **Google Sheet copy (optional):** `supabase/sheet_export.sql` adds `public.sheet_export(token)`, a read-only, token-protected export that a Google Apps Script (`tools/sheet-sync/LittleWings-Sheet-Sync.template.gs`) writes into the "Dashboard" Google Sheet every 5 minutes. `supabase/sheet_webhook.sql` optionally makes it update a few seconds after each save (pg_net → Apps Script web app). Only hashes of the token are stored; the real token/secret live only in the owner's Apps Script. One-way: edits in the sheet never come back.
+
 ## v2.8 — never lose typed changes
 Every form in the dashboard (pop-ups and page forms such as Settings, Timetable, Marks, Notices, Promotion, Documents) remembers the values it was opened with. If something was changed and you try to leave — **Cancel**, **✕**, **Esc**, tapping outside, the phone/browser **Back** button, the menu, another page, switching class/date, **Sign out**, or closing/reloading the tab — a small box asks:
 - **Save** — saves (if something is missing it stays on the form and shows what to fix),
