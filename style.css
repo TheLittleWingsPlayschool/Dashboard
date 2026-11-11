@@ -102,8 +102,9 @@ small { font-size: .8em; }
   #shell { display: grid; grid-template-columns: 230px 1fr; grid-template-rows: auto 1fr; min-height: 100vh; }
   #shell[hidden] { display: none; }
   .topbar { grid-column: 1 / -1; }
-  .sidenav { display: flex; flex-direction: column; gap: .25rem; padding: 1rem .7rem; position: sticky; top: 62px; align-self: start; height: calc(100vh - 62px); }
-  .sidenav a { display: flex; align-items: center; gap: .7rem; padding: .7rem .9rem; border-radius: 14px; text-decoration: none; color: var(--ink); font-weight: 700; }
+  .sidenav { display: flex; flex-direction: column; gap: .25rem; padding: .8rem .7rem calc(1.2rem + env(safe-area-inset-bottom)); position: sticky; top: 62px; align-self: start; box-sizing: border-box;
+    height: calc(100vh - 62px); height: calc(100dvh - 62px); max-height: calc(100dvh - 62px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+  .sidenav a { display: flex; align-items: center; gap: .7rem; padding: .55rem .9rem; flex: none; border-radius: 14px; text-decoration: none; color: var(--ink); font-weight: 700; }
   .sidenav a:hover { background: var(--sky-l); }
   .sidenav a.active { background: var(--sky); color: #fff; box-shadow: 0 3px 0 var(--sky-d); }
   .sidenav .ni { font-size: 1.2rem; }
@@ -612,3 +613,22 @@ details summary { cursor: pointer; font-weight: 700; }
   #print-root .idc, #print-root .idc-top, #print-root .idc-foot { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .pdoc .tc-tbl th, .pdoc .tc-tbl td { font-size: 11pt; padding: 2.4mm 2mm; }
 }
+
+/* ---------- v2.7.1: grouped, scrollable menus ---------- */
+.nav-sec { display: flex; flex-direction: column; gap: .15rem; flex: none; }
+.nav-sec + .nav-sec { margin-top: .35rem; }
+.nav-gh { display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: 0; padding: .45rem .9rem .3rem; font: inherit; font-size: .72rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); cursor: pointer; border-radius: 10px; min-height: 32px; }
+.nav-gh:hover { background: #f3f7fb; color: var(--ink); }
+.nav-gh i, .more-gh i { font-style: normal; transition: transform .15s; }
+.nav-sec.closed .nav-gh i, .more-sec.closed .more-gh i { transform: rotate(-90deg); }
+.nav-items { display: flex; flex-direction: column; gap: .15rem; }
+.nav-sec.closed .nav-items { display: none; }
+.more-sec { margin-bottom: .9rem; }
+.more-gh { display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: 0; padding: .35rem .2rem .5rem; font: inherit; font-weight: 800; font-size: .95rem; color: var(--ink); cursor: pointer; min-height: 40px; }
+.more-gh small { color: var(--muted); font-weight: 700; }
+.more-sec.closed .more-grid { display: none; }
+/* The "New version available" bar sits just above the bottom bar and the page
+   gets extra room, so it never hides the last menu items. */
+#sw-update { width: max-content; max-width: 92vw; text-align: center; top: auto; bottom: calc(var(--nav-h) + .6rem + env(safe-area-inset-bottom)); }
+@media (min-width: 960px) { #sw-update { bottom: 1.2rem; } }
+body:has(#sw-update:not([hidden])) .view { padding-bottom: calc(var(--nav-h) + 5rem + env(safe-area-inset-bottom)); }

@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.7, cloud) + Parents app (v1.5)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.7.1, cloud) + Parents app (v1.5)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -206,6 +206,9 @@ Until this is done the apps work normally and show *Phone alerts are not switche
 3. Reload Settings: the card turns green. Parents can now turn on alerts.
 
 Never paste the private key into WhatsApp, email, a chat or this repository. If it was ever shared, create a new pair, replace both secrets, and parents simply tap *Turn on alerts* again.
+
+## v2.7.1 — easier menu
+The menu is grouped into **Daily, Students, Money, School** and **Admin**. On a computer the side menu now scrolls on its own (short laptop screens), and each group can be folded by tapping its heading (remembered on that device; the group of the open page always opens). On a phone the **More** page uses the same groups. The *New version available* bar now sits just above the bottom bar and no longer covers menu items.
 
 ## Files
 - `index.html`, `style.css`, `app.js` — the app. `Store` at the top of `app.js` is the only data layer (offline copy + sync).

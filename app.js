@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.7.0';
+  var APP_VERSION = '2.7.1';
   // Part B (language toggle + phone alerts): on since v2.7.0.
   var PART_B = true;
   var PARENT_DOMAIN = 'parents.littlewings.app';
@@ -973,7 +973,7 @@
   function authCard(inner) {
     return '<div class="auth-wrap"><div class="auth-card">' +
       '<img class="auth-logo" src="assets/logo.jpeg" alt="The Little Wings Play School logo" width="96" height="96">' +
-      '<h1>' + esc(S.settings.schoolName || DEFAULT_SETTINGS.schoolName) + '</h1>' + inner + '</div>' +
+      '<h1>' + esc((S.settings && S.settings.schoolName) || DEFAULT_SETTINGS.schoolName) + '</h1>' + inner + '</div>' +
       '<p class="auth-foot">🔐 Secure sign-in · data saved in the school’s private online database · v' + APP_VERSION + '</p></div>';
   }
   function pwInput(name, label, auto, extra) {
@@ -1206,7 +1206,7 @@
     $('#user-chip').innerHTML = isAdmin() ? '<b>Admin</b> · ' + esc(ME.name) : '<b>' + esc(className(ME.classId)) + '</b> · ' + esc(ME.name);
     var link = function (k) { return '<a href="#/' + k + '" data-route="' + k + '"><span class="ni">' + ROUTES[k].icon + '</span><span class="nl">' + esc(routeTitle(k)) + navBadge(k) + '</span></a>'; };
     var mine = ROUTE_ORDER.filter(function (k) { return ROUTES[k].roles.indexOf(ME.role) >= 0; });
-    $('#sidenav').innerHTML = mine.map(link).join('');
+    $('#sidenav').innerHTML = (typeof sideNavHTML === 'function') ? sideNavHTML(mine, link) : mine.map(link).join('');
     $('#bottomnav').innerHTML = bottomList().filter(function (k) { return ROUTES[k].roles.indexOf(ME.role) >= 0; }).map(link).join('');
     applyLangAttr();
     var so = $('[data-act=logout] .hide-xs'); if (so) so.textContent = t('Sign out');
@@ -1222,6 +1222,9 @@
     }
     $$('[data-route]').forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-route') === key); });
     if (bottomList().indexOf(key) < 0) { var mb = $('#bottomnav [data-route="more"]'); if (mb) mb.classList.add('active'); }
+    var sa = $('#sidenav a[data-route="' + key + '"]'), sec = sa && sa.closest('.nav-sec');
+    if (sec && sec.classList.contains('closed')) { sec.classList.remove('closed'); var gh = $('.nav-gh', sec); if (gh) gh.setAttribute('aria-expanded', 'true'); }
+    if (sa && sa.scrollIntoView && UI.lastRoute !== key + '/' + p.arg) { var sn = $('#sidenav'); if (sn && sn.scrollHeight > sn.clientHeight) { var r1 = sa.getBoundingClientRect(), r2 = sn.getBoundingClientRect(); if (r1.top < r2.top || r1.bottom > r2.bottom) sa.scrollIntoView({ block: 'nearest' }); } }
     $('#page-title').textContent = routeTitle(key);
     document.title = routeTitle(key) + ' · The Little Wings';
     var view = $('#view');
@@ -2351,10 +2354,19 @@
    * ===================================================================== */
   function viewMore() {
     var items = ROUTE_ORDER.filter(function (k) { return bottomList().indexOf(k) < 0 && k !== 'more' && ROUTES[k].roles.indexOf(ME.role) >= 0; });
-    return '<div class="more-grid">' + items.map(function (k) {
+    var tile = function (k) {
       var sub = k === 'settings' && !isAdmin() ? 'Password, language, app' : MORE_SUB[k];
       return '<a class="more-tile" href="#/' + k + '"><span class="mt-i">' + ROUTES[k].icon + '</span><span><b>' + esc(routeTitle(k)) + navBadge(k) + '</b><small>' + esc(sub ? t(sub) : '') + '</small></span></a>';
-    }).join('') + '</div>' + (PART_B ? '<section class="card"><h3>🌐 ' + esc(t('Language')) + '</h3>' + langSelectHTML('lang-big') + '</section>' : '');
+    };
+    var closed = navClosed();
+    var groups = navGroupsFor(items);
+    var html = groups.length < 2 ? '<div class="more-grid">' + items.map(tile).join('') + '</div>' : groups.map(function (g) {
+      var shut = closed.indexOf('m-' + g.id) >= 0;
+      return '<section class="more-sec' + (shut ? ' closed' : '') + '"><button type="button" class="more-gh" data-act="more-group" data-id="' + g.id + '" aria-expanded="' + (!shut) + '">' +
+        '<span>' + g.icon + ' ' + esc(t(g.title)) + ' <small>(' + g.items.length + ')</small></span><i aria-hidden="true">▾</i></button>' +
+        '<div class="more-grid">' + g.items.map(tile).join('') + '</div></section>';
+    }).join('');
+    return html + (PART_B ? '<section class="card"><h3>🌐 ' + esc(t('Language')) + '</h3>' + langSelectHTML('lang-big') + '</section>' : '');
   }
   function navBadge(k) {
     var n = 0;
@@ -3354,6 +3366,7 @@
   // Navigation + key labels. Anything missing falls back to English.
   var I18N = {
     te: {
+      'Daily': 'రోజువారీ', 'Money': 'డబ్బు', 'School': 'పాఠశాల', 'Admin': 'అడ్మిన్',
       'Dashboard': 'డాష్‌బోర్డ్', 'My Class': 'నా తరగతి', 'Classes': 'తరగతులు', 'Students': 'విద్యార్థులు', 'Attendance': 'హాజరు',
       'Notices': 'నోటీసులు', 'Fees': 'ఫీజులు', 'Pending fees': 'బకాయి ఫీజులు', 'Enquiries': 'విచారణలు', 'Reports': 'నివేదికలు',
       'Expenses': 'ఖర్చులు', 'Staff': 'సిబ్బంది', 'Holidays': 'సెలవులు', 'Backup': 'బ్యాకప్', 'Settings': 'సెట్టింగ్‌లు', 'Account': 'ఖాతా',
@@ -3378,6 +3391,7 @@
       'Download Excel / JSON backup': 'ఎక్సెల్ / JSON బ్యాకప్ డౌన్‌లోడ్', 'School, fee rules, logins': 'పాఠశాల, ఫీజు నియమాలు, లాగిన్‌లు', 'Password, language, app': 'పాస్‌వర్డ్, భాష, యాప్'
     },
     hi: {
+      'Daily': 'रोज़ाना', 'Money': 'पैसा', 'School': 'स्कूल', 'Admin': 'एडमिन',
       'Dashboard': 'डैशबोर्ड', 'My Class': 'मेरी कक्षा', 'Classes': 'कक्षाएँ', 'Students': 'विद्यार्थी', 'Attendance': 'उपस्थिति',
       'Notices': 'सूचनाएँ', 'Fees': 'फीस', 'Pending fees': 'बकाया फीस', 'Enquiries': 'पूछताछ', 'Reports': 'रिपोर्ट',
       'Expenses': 'खर्च', 'Staff': 'स्टाफ़', 'Holidays': 'छुट्टियाँ', 'Backup': 'बैकअप', 'Settings': 'सेटिंग्स', 'Account': 'खाता',
@@ -4167,6 +4181,34 @@
   ROUTES.more.roles = ['admin', 'teacher'];
   ROUTE_ORDER = ['dashboard', 'classes', 'attendance', 'homework', 'notices', 'timetable', 'exams', 'gallery', 'fees', 'pending', 'enquiries', 'feedback', 'transport', 'idcards', 'promotion', 'reports', 'expenses', 'staff', 'holidays', 'audit', 'backup', 'settings'];
   var BOTTOM_TEACHER = ['dashboard', 'classes', 'attendance', 'homework', 'more'];
+  // v2.7.1: the menu is grouped so the 20+ pages are easy to find (side menu and More).
+  var NAV_GROUPS = [
+    { id: 'daily', title: 'Daily', icon: '☀️', items: ['dashboard', 'classes', 'attendance', 'homework', 'notices'] },
+    { id: 'students', title: 'Students', icon: '🧒', items: ['timetable', 'exams', 'idcards', 'promotion', 'transport'] },
+    { id: 'money', title: 'Money', icon: '💰', items: ['fees', 'pending', 'expenses', 'staff', 'reports'] },
+    { id: 'school', title: 'School', icon: '🏫', items: ['enquiries', 'feedback', 'gallery', 'holidays'] },
+    { id: 'admin', title: 'Admin', icon: '🛠️', items: ['audit', 'backup', 'settings'] }
+  ];
+  function navGroupsFor(keys) {
+    var seen = {};
+    var groups = NAV_GROUPS.map(function (g) {
+      var items = g.items.filter(function (k) { if (keys.indexOf(k) < 0) return false; seen[k] = 1; return true; });
+      return { id: g.id, title: g.title, icon: g.icon, items: items };
+    });
+    var rest = keys.filter(function (k) { return !seen[k]; });
+    if (rest.length) groups.push({ id: 'other', title: 'More', icon: '☰', items: rest });
+    return groups.filter(function (g) { return g.items.length; });
+  }
+  function navClosed() { try { var v = JSON.parse(localStorage.getItem('lw-nav-closed') || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+  function setNavClosed(list) { try { localStorage.setItem('lw-nav-closed', JSON.stringify(list)); } catch (e) { /* ignore */ } }
+  function sideNavHTML(keys, link) {
+    var closed = navClosed();
+    return navGroupsFor(keys).map(function (g) {
+      var shut = closed.indexOf(g.id) >= 0;
+      return '<div class="nav-sec' + (shut ? ' closed' : '') + '" data-group="' + g.id + '"><button type="button" class="nav-gh" data-act="nav-group" data-id="' + g.id + '" aria-expanded="' + (!shut) + '">' +
+        '<span>' + esc(t(g.title)) + '</span><i aria-hidden="true">▾</i></button><div class="nav-items">' + g.items.map(link).join('') + '</div></div>';
+    }).join('');
+  }
   var MORE_SUB = {
     notices: 'School and class notices', pending: 'Dues and WhatsApp reminders', reports: 'Fees, attendance, enquiries, profit', expenses: 'Rent, snacks, stationery…',
     staff: 'Staff, salary, staff attendance', holidays: 'Holidays and events', backup: 'Download Excel / JSON backup', settings: 'School, fee rules, logins',
@@ -4175,6 +4217,16 @@
   };
 
   var B2_ACTIONS = {
+    'nav-group': function (el) {
+      var id = attr(el, 'id'), sec = el.closest('.nav-sec'); if (!sec) return;
+      var shut = !sec.classList.contains('closed'); sec.classList.toggle('closed', shut); el.setAttribute('aria-expanded', String(!shut));
+      var list = navClosed().filter(function (x) { return x !== id; }); if (shut) list.push(id); setNavClosed(list);
+    },
+    'more-group': function (el) {
+      var id = 'm-' + attr(el, 'id'), sec = el.closest('.more-sec'); if (!sec) return;
+      var shut = !sec.classList.contains('closed'); sec.classList.toggle('closed', shut); el.setAttribute('aria-expanded', String(!shut));
+      var list = navClosed().filter(function (x) { return x !== id; }); if (shut) list.push(id); setNavClosed(list);
+    },
     'post-add': function () { openPostForm(null); },
     'post-edit': function (el) { var p = findPost(attr(el, 'id')); if (p) openPostForm(p); },
     'post-del': function (el) {

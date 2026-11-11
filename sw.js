@@ -1,19 +1,19 @@
 /*!
- * The Little Wings Dashboard service worker (v2.7.0)
+ * The Little Wings Dashboard service worker (v2.7.1)
  * Caches the app shell so the sign-in page and UI still load offline.
  * NEVER caches or intercepts Supabase API / Auth / Realtime requests.
  * Only same-origin GET requests are handled.
  */
-var CACHE_NAME = 'lw-dash-v2.7.0';
+var CACHE_NAME = 'lw-dash-v2.7.1';
 var PRECACHE = [
   './',
   './index.html',
-  './style.css?v=2.7.0',
-  './assets/receipt.css?v=2.7.0',
-  './assets/receipt.js?v=2.7.0',
-  './assets/xlsx-lite.js?v=2.7.0',
-  './app.js?v=2.7.0',
-  './config.js?v=2.7.0',
+  './style.css?v=2.7.1',
+  './assets/receipt.css?v=2.7.1',
+  './assets/receipt.js?v=2.7.1',
+  './assets/xlsx-lite.js?v=2.7.1',
+  './app.js?v=2.7.1',
+  './config.js?v=2.7.1',
   './assets/vendor/supabase-js-2.119.0.js',
   './assets/logo.jpeg',
   './assets/icons/icon-192.png',
