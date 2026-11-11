@@ -21,6 +21,9 @@
 -- settings_select policy defined below.
 -- v2.3: then run supabase/receipts.sql (parent_fees / parent_payments RPCs for
 -- the Parents app Fees tab, gated by settings.data.showFeesToParents).
+-- v2.4: then run supabase/enquiry_admission.sql (yearly_fee, private student
+-- photos bucket + RLS, parent_children section/status/photo_path, parent_fees
+-- Inactive + yearly/12 dues).
 -- =====================================================================
 
 create schema if not exists app;

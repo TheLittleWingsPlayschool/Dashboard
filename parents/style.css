@@ -185,3 +185,6 @@ main.view { padding: .8rem .8rem calc(var(--nav-h) + 1.2rem + env(safe-area-inse
 .rcpt-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 .rcpt-actions .btn { flex: 1 1 auto; }
 @media (max-width: 360px) { .bottomnav button { font-size: .66rem; } .bottomnav .ni { padding: .2rem .45rem; } }
+
+/* v1.2: child photo in the header */
+.top-row img.kid-photo { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; background: #fff; flex: 0 0 auto; }

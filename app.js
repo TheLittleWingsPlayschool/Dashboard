@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.3.0';
+  var APP_VERSION = '2.4.0';
   var PARENT_DOMAIN = 'parents.littlewings.app';
   var PARENTS_APP_URL = 'https://thelittlewingsplayschool.github.io/Dashboard/parents/';
   var TZ = 'Asia/Kolkata';
@@ -32,6 +32,8 @@
   var ENQ_SOURCES = ['Website', 'WhatsApp', 'Walk-in', 'Instagram', 'Referral', 'Google'];
   var ENQ_STATUS = ['New', 'Visited', 'Admitted', 'Not interested'];
   var ENQ_COLORS = { 'New': '#38a8e0', 'Visited': '#ffc93c', 'Admitted': '#6cc48a', 'Not interested': '#c9ced6' };
+  var ENQ_FEEDBACK = ['Interested', 'Doubtful'];
+  var ENQ_FB_COLORS = { Interested: '#6cc48a', Doubtful: '#ffc93c' };
   var STAFF_ROLES = ['Teacher', 'Assistant teacher', 'Ayah / Helper', 'Admin / Office', 'Driver', 'Other'];
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -44,7 +46,8 @@
     receiptPrefix: 'LW',
     receiptSeq: 1,
     feesStartMonth: '',
-    classTeachers: {}
+    classTeachers: {},
+    sections: 'A, B, C, D'
   };
 
   /* =====================================================================
@@ -71,7 +74,7 @@
     var PK = { settings: 'id', students: 'id', student_fees: 'student_id', attendance: 'day,class_id', payments: 'id', enquiries: 'id', staff: 'id' };
     var COLS = {
       settings: 'id,data,deleted,updated_at', students: 'id,class_id,data,deleted,updated_at',
-      student_fees: 'student_id,monthly_fee,deleted,updated_at', attendance: 'day,class_id,data,deleted,updated_at',
+      student_fees: 'student_id,monthly_fee,yearly_fee,deleted,updated_at', attendance: 'day,class_id,data,deleted,updated_at',
       payments: 'id,data,deleted,updated_at', enquiries: 'id,data,deleted,updated_at', staff: 'id,data,deleted,updated_at'
     };
     var listeners = [], statusListeners = [];
@@ -92,7 +95,7 @@
     function keyOf(t, r) { return t === 'attendance' ? r.day + '|' + r.class_id : t === 'student_fees' ? String(r.student_id) : String(r.id); }
     function canon(t, r) {
       var d = !!r.deleted;
-      if (t === 'student_fees') return { student_id: String(r.student_id), monthly_fee: Number(r.monthly_fee) || 0, deleted: d };
+      if (t === 'student_fees') return { student_id: String(r.student_id), monthly_fee: Number(r.monthly_fee) || 0, yearly_fee: Number(r.yearly_fee) || 0, deleted: d };
       if (t === 'attendance') return { day: String(r.day).slice(0, 10), class_id: r.class_id, data: asObject(r.data), deleted: d };
       if (t === 'students') return { id: String(r.id), class_id: r.class_id, data: asObject(r.data), deleted: d };
       if (t === 'settings') return { id: 1, data: asObject(r.data), deleted: d };
@@ -119,7 +122,7 @@
         var fees = st.rows.student_fees;
         return live('students').map(function (r) {
           var o = clone(r.data); o.id = r.id; o.classId = r.class_id;
-          if (isAdminRole()) { var f = fees[r.id]; o.monthlyFee = f && !f.deleted ? f.monthly_fee : 0; }
+          if (isAdminRole()) { var f = fees[r.id]; o.monthlyFee = f && !f.deleted ? f.monthly_fee : 0; o.yearlyFee = f && !f.deleted ? f.yearly_fee : 0; }
           return o;
         });
       }
@@ -138,8 +141,8 @@
         asArray(value).forEach(function (s) {
           if (!s || !s.id || !CLASS_BY_ID[s.classId]) return;
           var id = String(s.id);
-          out.students[id] = { id: id, class_id: s.classId, data: strip(s, ['id', 'classId', 'monthlyFee']), deleted: false };
-          if (out.student_fees) out.student_fees[id] = { student_id: id, monthly_fee: num(s.monthlyFee), deleted: false };
+          out.students[id] = { id: id, class_id: s.classId, data: strip(s, ['id', 'classId', 'monthlyFee', 'yearlyFee']), deleted: false };
+          if (out.student_fees) out.student_fees[id] = { student_id: id, monthly_fee: num(s.monthlyFee), yearly_fee: num(s.yearlyFee), deleted: false };
         });
       } else if (name === 'attendance') {
         out.attendance = {};
@@ -168,7 +171,7 @@
         if (!map[k] && !cur[k].deleted) {
           var tomb = clone(cur[k]); tomb.deleted = true;
           if ('data' in tomb) tomb.data = {};
-          if (t === 'student_fees') tomb.monthly_fee = 0;
+          if (t === 'student_fees') { tomb.monthly_fee = 0; tomb.yearly_fee = 0; }
           cur[k] = tomb; enqueue(t, k); n++;
         }
       });
@@ -517,8 +520,42 @@
 
   function className(id) { return CLASS_BY_ID[id] ? CLASS_BY_ID[id].name : '—'; }
   function byName(a, b) { return String(a.name || '').localeCompare(String(b.name || ''), 'en', { sensitivity: 'base' }); }
+  function isInactive(s) { return !s || s.status === 'Left' || s.status === 'Inactive'; }
+  function isConverted(e) { return !!(e && (e.status === 'Admitted' || e.studentId)); }
+  function primaryName(s) {
+    return (s && (s.parentName || s.guardianName || s.motherName || s.fatherName)) || '';
+  }
+  function primaryPhone(s) {
+    return (s && (s.phone || s.guardianPhone || s.motherPhone || s.fatherPhone)) || '';
+  }
+  function sectionList() {
+    var raw = String((S.settings && S.settings.sections) || 'A, B, C, D');
+    var seen = {}, out = [];
+    raw.split(/[,/|;]+/).forEach(function (x) {
+      var t = String(x || '').replace(/\s+/g, ' ').trim();
+      if (!t) return;
+      var k = t.toUpperCase();
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push(t.length <= 2 ? t.toUpperCase() : t);
+    });
+    return out.length ? out : ['A', 'B', 'C', 'D'];
+  }
+  function classLabel(s) {
+    if (!s) return '—';
+    return className(s.classId) + (s.section ? ' — Sec ' + s.section : '');
+  }
+  // Nursery: use the optional monthly fee when set. Otherwise (and for every
+  // other class) show yearly/12 when a yearly fee is stored. Fall back to a
+  // stored monthly fee so older records keep working. Never rewrite payments.
+  function effectiveMonthly(s) {
+    if (!s) return 0;
+    if (s.classId === 'nursery' && num(s.monthlyFee) > 0) return num(s.monthlyFee);
+    if (num(s.yearlyFee) > 0) return Math.round((num(s.yearlyFee) / 12) * 100) / 100;
+    return num(s.monthlyFee) || 0;
+  }
   function activeStudents(classId) {
-    return S.students.filter(function (s) { return s.status !== 'Left' && (!classId || s.classId === classId); }).sort(byName);
+    return S.students.filter(function (s) { return !isInactive(s) && (!classId || s.classId === classId); }).sort(byName);
   }
   function studentById(id) { for (var i = 0; i < S.students.length; i++) if (S.students[i].id === id) return S.students[i]; return null; }
   function staffById(id) { for (var i = 0; i < S.staff.length; i++) if (S.staff[i].id === id) return S.staff[i]; return null; }
@@ -560,8 +597,8 @@
     return S.payments.reduce(function (a, p) { return a + (p.studentId === studentId ? payTowards(p, ym) : 0); }, 0);
   }
   function admMonth(s) { return isISODate(s.admissionDate) ? s.admissionDate.slice(0, 7) : thisMonth(); }
-  function feeApplies(s, ym) { return s.status !== 'Left' && ym >= admMonth(s) && num(s.monthlyFee) > 0; }
-  function dueFor(s, ym) { return feeApplies(s, ym) ? Math.max(0, num(s.monthlyFee) - paidFor(s.id, ym)) : 0; }
+  function feeApplies(s, ym) { return !isInactive(s) && ym >= admMonth(s) && effectiveMonthly(s) > 0; }
+  function dueFor(s, ym) { return feeApplies(s, ym) ? Math.max(0, effectiveMonthly(s) - paidFor(s.id, ym)) : 0; }
   function outstanding(s) {
     var start = admMonth(s);
     var fs = S.settings.feesStartMonth;
@@ -572,7 +609,7 @@
   }
 
   // expose for tests
-  window.__lw = { inWords: inWords, outstanding: function (id) { var s = studentById(id); return s ? outstanding(s) : null; }, paidFor: paidFor, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION };
+  window.__lw = { inWords: inWords, outstanding: function (id) { var s = studentById(id); return s ? outstanding(s) : null; }, paidFor: paidFor, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION, effectiveMonthly: effectiveMonthly, isInactive: isInactive };
 
   /* =====================================================================
    * UI PRIMITIVES
@@ -662,6 +699,90 @@
     }).join('');
   }
   function classOptions() { return CLASSES.map(function (c) { return { value: c.id, label: c.name + ' (' + c.ages + ')' }; }); }
+  function initials(name) {
+    var p = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!p.length) return '?';
+    return ((p[0][0] || '') + (p.length > 1 ? (p[p.length - 1][0] || '') : '')).toUpperCase();
+  }
+  function photoPathOf(s) {
+    var path = s && s.photoPath;
+    return path && /^[A-Za-z0-9_-]{1,64}\/photo\.jpg$/.test(path) ? path : '';
+  }
+  var photoUrlCache = {};
+  function studentPhotoURL(path) {
+    if (!path || !SB) return Promise.resolve('');
+    var c = photoUrlCache[path];
+    if (c && c.exp > Date.now() + 30000) return Promise.resolve(c.url);
+    return SB.storage.from('student-photos').createSignedUrl(path, 3600).then(function (r) {
+      var url = r && r.data && r.data.signedUrl;
+      if (!url) return '';
+      photoUrlCache[path] = { url: url, exp: Date.now() + 50 * 60 * 1000 };
+      return url;
+    }).catch(function () { return ''; });
+  }
+  function avatarHTML(s, size) {
+    var path = photoPathOf(s);
+    var letter = esc(initials(s && s.name));
+    return '<div class="avatar' + (size === 'sm' ? ' sm' : '') + '" style="--c:' + ((s && CLASS_BY_ID[s.classId]) ? CLASS_BY_ID[s.classId].color : '#38a8e0') + '"' +
+      (path ? ' data-photo-path="' + esc(path) + '"' : '') + '>' + letter + '</div>';
+  }
+  function hydratePhotos(root) {
+    if (!root) return;
+    var els = root.querySelectorAll ? root.querySelectorAll('[data-photo-path]') : [];
+    Array.prototype.forEach.call(els, function (el) {
+      var path = el.getAttribute('data-photo-path');
+      if (!path || el.getAttribute('data-photo-loaded')) return;
+      el.setAttribute('data-photo-loaded', '1');
+      studentPhotoURL(path).then(function (url) {
+        if (!url || !el.parentNode) return;
+        var img = document.createElement('img');
+        img.alt = '';
+        img.src = url;
+        el.innerHTML = '';
+        el.appendChild(img);
+      });
+    });
+  }
+  function compressPhoto(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file) return resolve(null);
+      if (!/^image\//.test(file.type || '')) return reject(new Error('Please choose a photo (JPEG or PNG)'));
+      var img = new Image();
+      var src = URL.createObjectURL(file);
+      img.onload = function () {
+        var max = 600, w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        if (w > max || h > max) {
+          if (w >= h) { h = Math.round(h * max / w) || 1; w = max; }
+          else { w = Math.round(w * max / h) || 1; h = max; }
+        }
+        var canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(src);
+        canvas.toBlob(function (blob) {
+          if (!blob) return reject(new Error('Could not process the photo'));
+          resolve(blob);
+        }, 'image/jpeg', 0.82);
+      };
+      img.onerror = function () { URL.revokeObjectURL(src); reject(new Error('Could not read the photo')); };
+      img.src = src;
+    });
+  }
+  function uploadStudentPhoto(studentId, blob) {
+    if (!SB || !studentId || !blob) return Promise.reject(new Error('Photo could not be saved'));
+    var path = studentId + '/photo.jpg';
+    return SB.storage.from('student-photos').upload(path, blob, { upsert: true, contentType: 'image/jpeg', cacheControl: '3600' }).then(function (r) {
+      if (r.error) throw r.error;
+      delete photoUrlCache[path];
+      return path;
+    });
+  }
+  function removeStudentPhoto(path) {
+    if (!SB || !path) return Promise.resolve();
+    return SB.storage.from('student-photos').remove([path]).then(function () { delete photoUrlCache[path]; }).catch(function () {});
+  }
   function emptyState(icon, title, text, actionHTML) {
     return '<div class="empty"><div class="empty-icon">' + icon + '</div><h3>' + esc(title) + '</h3><p>' + esc(text) + '</p>' + (actionHTML || '') + '</div>';
   }
@@ -968,6 +1089,7 @@
       console.error(e);
       view.innerHTML = emptyState('😕', 'Something went wrong', 'Please reload the page. If it keeps happening, take a backup from Settings. (' + e.message + ')');
     }
+    hydratePhotos(view);
     var routeId = key + '/' + p.arg;
     if (routeId !== UI.lastRoute) { window.scrollTo(0, 0); UI.lastRoute = routeId; }
   }
@@ -1086,7 +1208,7 @@
     }).join('') + '</section>';
 
     var enqParts = ENQ_STATUS.map(function (s) { return { label: s, value: S.enquiries.filter(function (e) { return e.status === s; }).length, color: ENQ_COLORS[s] }; });
-    var feeParts = [{ label: 'Collected (' + fmtMonth(ym) + ' fees)', value: studs.reduce(function (a, s) { return a + (feeApplies(s, ym) ? Math.min(num(s.monthlyFee), paidFor(s.id, ym)) : 0); }, 0), color: '#6cc48a' },
+    var feeParts = [{ label: 'Collected (' + fmtMonth(ym) + ' fees)', value: studs.reduce(function (a, s) { return a + (feeApplies(s, ym) ? Math.min(effectiveMonthly(s), paidFor(s.id, ym)) : 0); }, 0), color: '#6cc48a' },
       { label: 'Pending', value: pendingMonth, color: '#ff7a6b' }];
     var feeTotal = feeParts[0].value + feeParts[1].value;
     html += '<div class="grid-charts">' +
@@ -1111,7 +1233,7 @@
       return '<li><span><b>' + esc(p.studentName) + '</b> · ' + esc(periodText(p)) + '<small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><b>' + inr(p.amount) + '</b></li>';
     }).join('') + '</ul>' : '<p class="muted">No payments recorded yet.</p>') + '</section>';
     html += '<section class="card"><h3>⏳ Top pending fees</h3>' + (outstandingList.length ? '<ul class="mini-list">' + outstandingList.sort(function (a, b) { return b.due - a.due; }).slice(0, 6).map(function (x) {
-      return '<li><span><b>' + esc(x.s.name) + '</b> · ' + esc(className(x.s.classId)) + '<small>' + esc(x.s.parentName || '') + '</small></span><b class="coral-t">' + inr(x.due) + '</b></li>';
+      return '<li><span><b>' + esc(x.s.name) + '</b> · ' + esc(className(x.s.classId)) + '<small>' + esc(primaryName(x.s) || '') + '</small></span><b class="coral-t">' + inr(x.due) + '</b></li>';
     }).join('') + '</ul><a class="more" href="#/fees">Go to fees →</a>' : '<p class="muted">No pending fees. 🎉</p>') + '</section>';
     html += '</div>';
     return html;
@@ -1134,7 +1256,7 @@
       '</div>';
     html += '<div class="row gap wrap"><a class="btn primary big" href="#/attendance">✅ ' + (st.marked ? 'Update' : 'Mark') + ' today’s attendance</a><a class="btn ghost big" href="#/classes">🧒 View students</a></div>';
     html += '<section class="card"><h3>Absent / on leave today</h3>' + (!st.marked ? '<p class="muted">Attendance not marked yet for today.</p>' : away.length ? '<ul class="mini-list">' + away.map(function (s) {
-      return '<li><span><b>' + esc(s.name) + '</b> ' + badge(ATT[rec[s.id]].label, rec[s.id] === 'A' ? '#ff7a6b' : '#ffc93c') + '<small>' + esc(s.parentName || '') + '</small></span>' + phoneLinks(s.phone, s.whatsapp) + '</li>';
+      return '<li><span><b>' + esc(s.name) + '</b> ' + badge(ATT[rec[s.id]].label, rec[s.id] === 'A' ? '#ff7a6b' : '#ffc93c') + '<small>' + esc(primaryName(s) || '') + '</small></span>' + phoneLinks(primaryPhone(s), s.whatsapp) + '</li>';
     }).join('') + '</ul>' : '<p class="muted">Everyone is here today! 🎉</p>') + '</section>';
     if (!list.length) html += emptyState('🌱', 'No students in ' + c.name + ' yet', 'Students added by the admin (or by you) will appear here.', '<button class="btn primary" data-act="student-add">➕ Add student</button>');
     return html;
@@ -1160,8 +1282,8 @@
     html += '<section class="class-head" style="--c:' + c.color + '"><div><h1>' + c.emoji + ' ' + esc(c.name) + ' <small>' + esc(c.ages) + '</small></h1>' +
       '<p>👩‍🏫 Class teacher: <b>' + (teacher ? esc(teacher) : 'Not assigned') + '</b>' + (isAdmin() && !teacher ? ' · <a href="#/settings">Assign</a>' : '') + ' · ' + activeStudents(cid).length + ' active students</p></div>' +
       '<button class="btn primary" data-act="student-add" data-class="' + cid + '">➕ Add student</button></section>';
-    html += '<div class="toolbar"><input type="search" class="search" placeholder="🔍 Search name, parent or phone" value="' + esc(UI.search) + '" data-input="student-search" aria-label="Search students">' +
-      '<select data-change="student-status" aria-label="Filter by status">' + options([{ value: 'Active', label: 'Active students' }, { value: 'Left', label: 'Left / withdrawn' }, { value: 'All', label: 'All' }], UI.classStatus) + '</select></div>';
+    html += '<div class="toolbar"><input type="search" class="search" placeholder="🔍 Search name, parent, phone or section" value="' + esc(UI.search) + '" data-input="student-search" aria-label="Search students">' +
+      '<select data-change="student-status" aria-label="Filter by status">' + options([{ value: 'Active', label: 'Active students' }, { value: 'Inactive', label: 'Inactive' }, { value: 'All', label: 'All' }], UI.classStatus) + '</select></div>';
     html += '<div id="student-list">' + studentListHTML(cid) + '</div>';
     return html;
   }
@@ -1169,22 +1291,24 @@
     var q = UI.search.trim().toLowerCase();
     var all = S.students.filter(function (s) { return s.classId === cid; });
     var list = all.filter(function (s) {
-      if (UI.classStatus === 'Active' && s.status === 'Left') return false;
-      if (UI.classStatus === 'Left' && s.status !== 'Left') return false;
+      if (UI.classStatus === 'Active' && isInactive(s)) return false;
+      if (UI.classStatus === 'Inactive' && !isInactive(s)) return false;
       if (!q) return true;
-      return [s.name, s.parentName, s.phone, s.whatsapp].join(' ').toLowerCase().indexOf(q) >= 0;
+      return [s.name, primaryName(s), s.motherName, s.fatherName, s.guardianName, primaryPhone(s), s.motherPhone, s.fatherPhone, s.guardianPhone, s.whatsapp, s.address, s.section].join(' ').toLowerCase().indexOf(q) >= 0;
     }).sort(byName);
     if (!all.length) return emptyState(CLASS_BY_ID[cid].emoji, 'No students in ' + className(cid) + ' yet', 'Add the first child to this class — it only takes a minute.', '<button class="btn primary" data-act="student-add" data-class="' + cid + '">➕ Add student</button>');
     if (!list.length) return emptyState('🔍', 'No matches', 'No students match your search or filter.');
     var admin = isAdmin();
     return '<div class="table-wrap"><table class="table responsive"><thead><tr><th>Name</th><th>Age</th><th>Parent / Guardian</th><th>Phone</th>' + (admin ? '<th class="num">Fee / month</th>' : '') + '<th class="act-col"><span class="sr">Actions</span></th></tr></thead><tbody>' +
       list.map(function (s) {
-        return '<tr' + (s.status === 'Left' ? ' class="left"' : '') + '><td data-label="Name"><button type="button" class="link strong" data-act="student-view" data-id="' + esc(s.id) + '">' + esc(s.name) + '</button>' +
-          (s.medical ? ' <span title="Has medical notes" class="tag med">⚕️ Medical</span>' : '') + (s.status === 'Left' ? ' <span class="tag">Left</span>' : '') + '</td>' +
+        var stTag = s.status === 'Left' ? ' <span class="tag">Left</span>' : (s.status === 'Inactive' ? ' <span class="tag inactive">Inactive</span>' : '');
+        return '<tr' + (isInactive(s) ? ' class="left"' : '') + '><td data-label="Name"><div class="stu-name">' + avatarHTML(s, 'sm') + '<span class="who"><button type="button" class="link strong" data-act="student-view" data-id="' + esc(s.id) + '">' + esc(s.name) + '</button>' +
+          (s.section ? ' <span class="muted">Sec ' + esc(s.section) + '</span>' : '') +
+          (s.medical ? ' <span title="Has medical notes" class="tag med">⚕️ Medical</span>' : '') + stTag + '</span></div></td>' +
           '<td data-label="Age">' + esc(ageText(s.dob)) + '</td>' +
-          '<td data-label="Parent">' + esc(s.parentName || '—') + '</td>' +
-          '<td data-label="Phone">' + phoneLinks(s.phone, s.whatsapp) + '</td>' +
-          (admin ? '<td data-label="Fee" class="num">' + (num(s.monthlyFee) ? inr(s.monthlyFee) : '<span class="muted">—</span>') + '</td>' : '') +
+          '<td data-label="Parent">' + esc(primaryName(s) || '—') + '</td>' +
+          '<td data-label="Phone">' + phoneLinks(primaryPhone(s), s.whatsapp) + '</td>' +
+          (admin ? '<td data-label="Fee" class="num">' + (effectiveMonthly(s) ? inr(effectiveMonthly(s)) : '<span class="muted">—</span>') + '</td>' : '') +
           '<td class="actions"><button type="button" class="icon-btn" data-act="student-edit" data-id="' + esc(s.id) + '" title="Edit" aria-label="Edit ' + esc(s.name) + '">✏️</button>' +
           (admin ? '<button type="button" class="icon-btn" data-act="student-del" data-id="' + esc(s.id) + '" title="Delete" aria-label="Delete ' + esc(s.name) + '">🗑️</button>' : '') + '</td></tr>';
       }).join('') + '</tbody></table></div>';
@@ -1195,44 +1319,127 @@
     var teacher = !isAdmin();
     var classCtl = teacher ? '<input type="hidden" name="classId" value="' + esc(ME.classId) + '"><input disabled value="' + esc(className(ME.classId)) + '">'
       : '<select name="classId" required>' + options(classOptions(), v.classId, 'Select class') + '</select>';
-    return '<form class="form" novalidate><div class="grid2">' +
+    var statusOpts = ['Active', 'Inactive'];
+    if (v.status === 'Left') statusOpts = ['Active', 'Inactive', 'Left'];
+    var secs = sectionList();
+    if (v.section && secs.indexOf(v.section) < 0) secs = [v.section].concat(secs);
+    var showMonthly = teacher ? false : (v.classId === 'nursery' || (!v.classId && false) || (s && num(s.monthlyFee) > 0 && v.classId !== 'nursery'));
+    // Keep a legacy monthly field visible when a non-nursery student already has one.
+    if (!teacher && s && num(s.monthlyFee) > 0 && v.classId !== 'nursery') showMonthly = true;
+    var photo = '<div class="photo-pick"><div class="avatar" id="photo-preview" style="--c:' + ((CLASS_BY_ID[v.classId] && CLASS_BY_ID[v.classId].color) || '#38a8e0') + '"' + (photoPathOf(v) ? ' data-photo-path="' + esc(photoPathOf(v)) + '"' : '') + '>' + esc(initials(v.name)) + '</div>' +
+      (teacher ? '<p class="muted small">The admin can add a photo.</p>' : '<div class="photo-acts"><label class="btn ghost small file-btn">📷 Take or choose photo<input type="file" name="photoFile" accept="image/*" hidden></label>' +
+        '<button type="button" class="btn small ghost" data-act="photo-clear"' + (photoPathOf(v) || v.photoPath ? '' : ' hidden') + '>Remove</button>' +
+        '<input type="hidden" name="photoPath" value="' + esc(v.photoPath || '') + '"><input type="hidden" name="photoRemoved" value="0">' +
+        '<small class="hint">Photos are resized on this phone (about 600 px) and stored privately.</small></div>');
+    photo += '</div>';
+    return '<form class="form" novalidate id="student-form">' +
+      '<div class="grid2">' +
+      '<div class="form-sec"><h3>Child</h3></div>' +
       field('Child’s full name *', '<input name="name" maxlength="80" autocomplete="off" value="' + esc(v.name) + '" required>') +
       field('Date of birth *', '<input type="date" name="dob" max="' + todayISO() + '" value="' + esc(v.dob) + '" required>', '<small class="hint" id="age-hint"></small>') +
       field('Class *', classCtl) +
+      field('Section', '<select name="section">' + options(secs.map(function (x) { return { value: x, label: 'Section ' + x }; }), v.section, 'Select section') + '</select>', '<small class="hint">Assigned after the class is chosen. Sections can be edited in Settings.</small>', 'span2') +
       field('Admission date *', '<input type="date" name="admissionDate" value="' + esc(v.admissionDate) + '" required>') +
-      field('Parent / Guardian name *', '<input name="parentName" maxlength="80" value="' + esc(v.parentName) + '" required>') +
-      field('Phone *', '<input type="tel" name="phone" inputmode="tel" maxlength="16" placeholder="10-digit mobile" value="' + esc(v.phone) + '" required>') +
-      field('WhatsApp number', '<input type="tel" name="whatsapp" inputmode="tel" maxlength="16" placeholder="Blank = same as phone" value="' + esc(v.whatsapp) + '">') +
-      (teacher ? '' : field('Monthly fee (₹)', '<input type="number" name="monthlyFee" min="0" max="1000000" step="1" inputmode="numeric" placeholder="e.g. 2500" value="' + esc(v.monthlyFee == null ? '' : v.monthlyFee) + '">')) +
+      field('Status', '<select name="status">' + options(statusOpts, v.status === 'Left' ? 'Left' : (v.status === 'Inactive' ? 'Inactive' : 'Active')) + '</select>') +
+      (teacher ? '' : '<div class="form-sec span2"><h3>Photo</h3>' + photo + '</div>') +
+      (teacher ? '' : '') +
+      '<div class="form-sec"><h3>Family</h3></div>' +
+      field('Mother’s name', '<input name="motherName" maxlength="80" value="' + esc(v.motherName) + '">') +
+      field('Mother’s mobile', '<input type="tel" name="motherPhone" inputmode="tel" maxlength="16" placeholder="10-digit mobile" value="' + esc(v.motherPhone) + '">') +
+      field('Father’s name', '<input name="fatherName" maxlength="80" value="' + esc(v.fatherName) + '">') +
+      field('Father’s mobile', '<input type="tel" name="fatherPhone" inputmode="tel" maxlength="16" placeholder="10-digit mobile" value="' + esc(v.fatherPhone) + '">') +
+      field('Guardian’s name', '<input name="guardianName" maxlength="80" value="' + esc(v.guardianName || (!v.motherName && !v.fatherName ? v.parentName : '')) + '">') +
+      field('Guardian’s mobile', '<input type="tel" name="guardianPhone" inputmode="tel" maxlength="16" placeholder="10-digit mobile" value="' + esc(v.guardianPhone || (!v.motherPhone && !v.fatherPhone ? v.phone : '')) + '">') +
+      field('WhatsApp number', '<input type="tel" name="whatsapp" inputmode="tel" maxlength="16" placeholder="Blank = same as primary phone" value="' + esc(v.whatsapp) + '">') +
+      field('Student address', '<textarea name="address" rows="2" maxlength="250" placeholder="House / street, area, town">' + esc(v.address) + '</textarea>', '', 'span2') +
+      (teacher ? '' : '<div class="form-sec"><h3>Fees</h3></div>') +
+      (teacher ? '' : field('Yearly fee (₹)', '<input type="number" name="yearlyFee" min="0" max="10000000" step="1" inputmode="numeric" placeholder="e.g. 18000" value="' + esc(v.yearlyFee == null || v.yearlyFee === 0 ? (v.yearlyFee === 0 ? '0' : '') : v.yearlyFee) + '">', '<small class="hint">For all classes. Receipts and pending dues use this (÷ 12) unless a nursery monthly fee is set.</small>')) +
+      (teacher ? '' : field('Monthly fee (₹) — Nursery only, optional', '<input type="number" name="monthlyFee" min="0" max="1000000" step="1" inputmode="numeric" placeholder="Leave blank to use yearly ÷ 12" value="' + esc(v.monthlyFee == null || v.monthlyFee === 0 ? '' : v.monthlyFee) + '">', '<small class="hint fee-hint" id="monthly-hint"></small>', '') ) +
       field('Emergency contact', '<input name="emergency" maxlength="120" placeholder="Name & phone" value="' + esc(v.emergency) + '">') +
       field('Authorised pickup', '<input name="pickup" maxlength="160" placeholder="Who may collect the child" value="' + esc(v.pickup) + '">') +
-      field('Status', '<select name="status">' + options(['Active', 'Left'], v.status) + '</select>') +
       '</div>' +
       field('Medical notes / allergies', '<textarea name="medical" rows="2" maxlength="600">' + esc(v.medical) + '</textarea>') +
       field('Notes', '<textarea name="notes" rows="2" maxlength="1500">' + esc(v.notes) + '</textarea>') +
       '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">' + (s ? 'Save changes' : 'Add student') + '</button></div></form>';
   }
+  function bindPhotoPicker(root, s) {
+    var form = $('form', root) || root;
+    var file = $('[name=photoFile]', root), preview = $('#photo-preview', root), clearBtn = $('[data-act=photo-clear]', root);
+    var pathInp = $('[name=photoPath]', root), remInp = $('[name=photoRemoved]', root);
+    if (!file || !preview) return;
+    form._photoBlob = null;
+    function setPreview(src, letter) {
+      if (src) { preview.innerHTML = ''; var img = document.createElement('img'); img.alt = ''; img.src = src; preview.appendChild(img); }
+      else preview.textContent = letter || initials(($('[name=name]', root) || {}).value || (s && s.name) || '');
+    }
+    hydratePhotos(preview.parentNode);
+    file.addEventListener('change', function () {
+      var f = file.files && file.files[0];
+      if (!f) return;
+      compressPhoto(f).then(function (blob) {
+        form._photoBlob = blob;
+        if (pathInp) pathInp.value = pathInp.value; // keep old until save
+        if (remInp) remInp.value = '0';
+        if (clearBtn) clearBtn.hidden = false;
+        setPreview(URL.createObjectURL(blob));
+      }).catch(function (err) { toast((err && err.message) || 'Could not read the photo', 'err'); file.value = ''; });
+    });
+    if (clearBtn) clearBtn.addEventListener('click', function () {
+      form._photoBlob = null;
+      if (file) file.value = '';
+      if (pathInp) pathInp.value = '';
+      if (remInp) remInp.value = '1';
+      preview.removeAttribute('data-photo-path');
+      setPreview('');
+      clearBtn.hidden = true;
+    });
+    var nameInp = $('[name=name]', root);
+    if (nameInp) nameInp.addEventListener('input', function () {
+      if (!preview.querySelector('img')) preview.textContent = initials(nameInp.value);
+    });
+  }
+  function syncFeeAndSectionFields(root, touchedSection) {
+    var cls = ($('select[name=classId]', root) || $('[name=classId]', root) || {}).value;
+    var monWrap = $('[name=monthlyFee]', root) && $('[name=monthlyFee]', root).closest('.field');
+    var hint = $('#monthly-hint', root);
+    var isNur = cls === 'nursery';
+    var hasLegacy = monWrap && $('[name=monthlyFee]', root).value;
+    if (monWrap) {
+      // Show monthly for Nursery, or when a legacy monthly value is already stored.
+      var show = isNur || (!!hasLegacy && cls !== 'nursery' && !root._hideLegacyMonthly);
+      if (!isNur && root._forceHideMonthly) show = false;
+      monWrap.hidden = !isNur && !(+$('[name=monthlyFee]', root).value > 0);
+      if (isNur) monWrap.hidden = false;
+    }
+    if (hint) hint.textContent = isNur ? 'Optional for Nursery. If left blank, pending dues use yearly fee ÷ 12.' : (monWrap && !monWrap.hidden ? 'This child already has a monthly fee from earlier. Yearly fee ÷ 12 is used for dues once a yearly fee is entered. You can clear the monthly amount if you want.' : 'For this class, pending dues use yearly fee ÷ 12.');
+  }
   function openStudentForm(s, pre, onSaved) {
     openModal({
-      title: s ? 'Edit student' : 'Add student', size: 'wide', body: studentFormHTML(s, pre),
+      title: s ? 'Edit student' : 'Add student / admission', size: 'wide', body: studentFormHTML(s, pre),
       mount: function (root) {
         var dob = $('[name=dob]', root), sel = $('select[name=classId]', root), hint = $('#age-hint', root);
         var touched = !!(s || (pre && pre.classId));
-        if (sel) sel.addEventListener('change', function () { touched = true; });
+        if (sel) sel.addEventListener('change', function () { touched = true; syncFeeAndSectionFields(root); });
         function upd() {
           var a = ageParts(dob.value);
           if (!a) { hint.textContent = ''; return; }
           var sug = suggestClass(a.years);
           hint.textContent = 'Age today: ' + a.y + ' y ' + a.m + ' m · suggested: ' + className(sug);
-          if (sel && !touched && sug) sel.value = sug;
+          if (sel && !touched && sug) { sel.value = sug; syncFeeAndSectionFields(root); }
         }
-        dob.addEventListener('input', upd); dob.addEventListener('change', upd); upd();
+        if (dob) { dob.addEventListener('input', upd); dob.addEventListener('change', upd); upd(); }
+        syncFeeAndSectionFields(root);
+        bindPhotoPicker(root, s);
       },
       onSubmit: function (form, fd) {
         var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
         var ok = true, today = todayISO();
-        var d = { name: g('name').replace(/\s+/g, ' '), dob: g('dob'), classId: g('classId'), admissionDate: g('admissionDate'), parentName: g('parentName'), phone: g('phone'), whatsapp: g('whatsapp'),
-          emergency: g('emergency'), pickup: g('pickup'), status: g('status') === 'Left' ? 'Left' : 'Active', medical: g('medical'), notes: g('notes') };
+        var statusVal = g('status');
+        if (statusVal !== 'Inactive' && statusVal !== 'Left') statusVal = 'Active';
+        var d = { name: g('name').replace(/\s+/g, ' '), dob: g('dob'), classId: g('classId'), admissionDate: g('admissionDate'),
+          motherName: g('motherName'), motherPhone: g('motherPhone'), fatherName: g('fatherName'), fatherPhone: g('fatherPhone'),
+          guardianName: g('guardianName'), guardianPhone: g('guardianPhone'), whatsapp: g('whatsapp'), address: g('address'),
+          section: g('section'), emergency: g('emergency'), pickup: g('pickup'), status: statusVal, medical: g('medical'), notes: g('notes') };
         if (d.name.length < 2) { fieldError(form, 'name', 'Please enter the child’s name'); ok = false; }
         if (!isISODate(d.dob)) { fieldError(form, 'dob', 'Please choose the date of birth'); ok = false; }
         else if (d.dob > today) { fieldError(form, 'dob', 'Date of birth can’t be in the future'); ok = false; }
@@ -1240,27 +1447,70 @@
         if (!CLASS_BY_ID[d.classId]) { fieldError(form, 'classId', 'Please choose a class'); ok = false; }
         if (!isISODate(d.admissionDate)) { fieldError(form, 'admissionDate', 'Please choose the admission date'); ok = false; }
         else if (isISODate(d.dob) && d.admissionDate < d.dob) { fieldError(form, 'admissionDate', 'Admission date is before date of birth'); ok = false; }
-        if (d.parentName.length < 2) { fieldError(form, 'parentName', 'Please enter the parent or guardian name'); ok = false; }
-        if (!validPhone(d.phone)) { fieldError(form, 'phone', 'Enter a valid 10-digit Indian mobile number'); ok = false; }
-        if (d.whatsapp && !validPhone(d.whatsapp)) { fieldError(form, 'whatsapp', 'Enter a valid 10-digit number or leave blank'); ok = false; }
-        if (isAdmin()) {
-          var fee = g('monthlyFee');
-          if (fee !== '' && (!isFinite(+fee) || +fee < 0)) { fieldError(form, 'monthlyFee', 'Fee must be 0 or more'); ok = false; }
-          d.monthlyFee = fee === '' ? 0 : Math.round(+fee * 100) / 100;
+        function checkPhone(key, label) {
+          if (g(key) && !validPhone(g(key))) { fieldError(form, key, 'Enter a valid 10-digit Indian mobile number or leave blank'); return false; }
+          return true;
         }
+        if (!checkPhone('motherPhone') || !checkPhone('fatherPhone') || !checkPhone('guardianPhone')) ok = false;
+        if (d.whatsapp && !validPhone(d.whatsapp)) { fieldError(form, 'whatsapp', 'Enter a valid 10-digit number or leave blank'); ok = false; }
+        // At least one parent/guardian name and one mobile (legacy parentName/phone still count).
+        var names = [d.motherName, d.fatherName, d.guardianName, s && !d.motherName && !d.fatherName && !d.guardianName ? s.parentName : ''].filter(function (x) { return x && x.length >= 2; });
+        var phones = [d.motherPhone, d.fatherPhone, d.guardianPhone].filter(function (x) { return validPhone(x); });
+        if (!names.length && s && (s.parentName || '').length >= 2) names = [s.parentName];
+        if (!phones.length && s && validPhone(s.phone)) phones = [s.phone];
+        if (!names.length) { fieldError(form, 'motherName', 'Enter the mother’s, father’s or guardian’s name'); ok = false; }
+        if (!phones.length) { fieldError(form, 'motherPhone', 'Enter at least one parent or guardian mobile number'); ok = false; }
+        d.parentName = d.guardianName || d.motherName || d.fatherName || (s && s.parentName) || '';
+        d.phone = d.guardianPhone || d.motherPhone || d.fatherPhone || (s && s.phone) || '';
+        if (isAdmin()) {
+          var yf = g('yearlyFee'), mfField = form.querySelector('[name=monthlyFee]'), mf = mfField ? g('monthlyFee') : '';
+          if (yf !== '' && (!isFinite(+yf) || +yf < 0)) { fieldError(form, 'yearlyFee', 'Yearly fee must be 0 or more'); ok = false; }
+          d.yearlyFee = yf === '' ? 0 : Math.round(+yf * 100) / 100;
+          if (mfField && !mfField.closest('.field').hidden) {
+            if (mf !== '' && (!isFinite(+mf) || +mf < 0)) { fieldError(form, 'monthlyFee', 'Fee must be 0 or more'); ok = false; }
+            d.monthlyFee = mf === '' ? 0 : Math.round(+mf * 100) / 100;
+          } else {
+            d.monthlyFee = s ? num(s.monthlyFee) : 0;
+          }
+        }
+        if (sectionList().indexOf(d.section) < 0 && !(s && s.section === d.section && d.section)) d.section = d.section || '';
         if (!ok) return false;
+        var blob = form._photoBlob;
+        var removePhoto = g('photoRemoved') === '1';
+        var keepPath = g('photoPath') || (s && s.photoPath) || '';
         var dup = S.students.filter(function (x) { return x !== s && x.name.toLowerCase() === d.name.toLowerCase() && x.dob === d.dob; })[0];
         return (dup ? confirmBox('A student named “' + d.name + '” with the same date of birth already exists. Add anyway?', { ok: 'Yes, save', danger: false, title: 'Possible duplicate' }) : Promise.resolve(true)).then(function (go) {
           if (!go) return false;
           var rec;
           if (s) { rec = s; Object.assign(s, d, { updatedAt: new Date().toISOString() }); }
-          else { rec = Object.assign({ id: uid(), monthlyFee: 0, createdAt: new Date().toISOString() }, d); S.students.push(rec); }
-          persist('students');
-          toast(s ? 'Student updated' : d.name + ' added to ' + className(d.classId) + ' 🎉');
-          if (!s) UI.classTab = d.classId;
-          if (onSaved) onSaved(rec);
-          render();
-          return true;
+          else { rec = Object.assign({ id: uid(), monthlyFee: 0, yearlyFee: 0, createdAt: new Date().toISOString() }, d); S.students.push(rec); }
+          function finish() {
+            persist('students');
+            toast(s ? 'Student updated' : d.name + ' added to ' + className(d.classId) + ' 🎉');
+            if (!s) UI.classTab = d.classId;
+            if (onSaved) onSaved(rec);
+            render();
+            return true;
+          }
+          if (isAdmin() && blob) {
+            if (!navigator.onLine) { toast('Student saved. Add the photo when you are back online.', 'err'); rec.photoPath = rec.photoPath || ''; return finish(); }
+            var btn = form.querySelector('button.primary'); if (btn) { btn.disabled = true; btn.textContent = 'Saving photo…'; }
+            return uploadStudentPhoto(rec.id, blob).then(function (path) {
+              rec.photoPath = path; rec.updatedAt = new Date().toISOString();
+              return finish();
+            }).catch(function (err) {
+              if (btn) { btn.disabled = false; btn.textContent = s ? 'Save changes' : 'Add student'; }
+              toast('Student saved, but the photo could not be uploaded: ' + ((err && err.message) || err), 'err');
+              return finish();
+            });
+          }
+          if (isAdmin() && removePhoto && keepPath) {
+            rec.photoPath = '';
+            removeStudentPhoto(keepPath);
+          } else if (keepPath && !removePhoto && !blob) {
+            rec.photoPath = keepPath;
+          }
+          return finish();
         });
       }
     });
@@ -1272,10 +1522,18 @@
     var ym = thisMonth(), n = daysInMonth(ym), c = { P: 0, A: 0, L: 0, H: 0 };
     for (var d = 1; d <= n; d++) { var v = attFor(ym + '-' + String(d).padStart(2, '0'))[s.id]; if (c[v] != null) c[v]++; }
     var row = function (k, v) { return '<div class="kv"><span>' + k + '</span><b>' + v + '</b></div>'; };
-    var body = '<div class="profile" style="--c:' + CLASS_BY_ID[s.classId].color + '"><div class="avatar">' + esc((s.name || '?').charAt(0).toUpperCase()) + '</div><div><h3>' + esc(s.name) + '</h3><p>' + esc(className(s.classId)) + ' · ' + esc(ageText(s.dob)) + (s.status === 'Left' ? ' · <span class="tag">Left</span>' : '') + '</p></div></div>' +
-      '<div class="kvs">' + row('Date of birth', fmtDate(s.dob)) + row('Admission date', fmtDate(s.admissionDate)) + row('Parent / Guardian', esc(s.parentName || '—')) +
-      row('Phone', phoneLinks(s.phone, s.whatsapp)) + (s.whatsapp ? row('WhatsApp', esc(s.whatsapp)) : '') +
-      (isAdmin() ? row('Monthly fee', num(s.monthlyFee) ? inr(s.monthlyFee) : '—') : '') +
+    var stTag = s.status === 'Left' ? ' · <span class="tag">Left</span>' : (s.status === 'Inactive' ? ' · <span class="tag inactive">Inactive</span>' : '');
+    var body = '<div class="profile" style="--c:' + CLASS_BY_ID[s.classId].color + '">' + avatarHTML(s) + '<div><h3>' + esc(s.name) + '</h3><p>' + esc(classLabel(s)) + ' · ' + esc(ageText(s.dob)) + stTag + '</p></div></div>' +
+      '<div class="kvs">' + row('Date of birth', fmtDate(s.dob)) + row('Admission date', fmtDate(s.admissionDate)) +
+      (s.motherName || s.motherPhone ? row('Mother', esc(s.motherName || '—') + (s.motherPhone ? ' · ' : '')) + (s.motherPhone ? row('Mother’s mobile', phoneLinks(s.motherPhone)) : '') : '') +
+      (s.fatherName || s.fatherPhone ? row('Father', esc(s.fatherName || '—') + (s.fatherPhone ? ' · ' : '')) + (s.fatherPhone ? row('Father’s mobile', phoneLinks(s.fatherPhone)) : '') : '') +
+      (s.guardianName || s.guardianPhone ? row('Guardian', esc(s.guardianName || '—')) + (s.guardianPhone ? row('Guardian’s mobile', phoneLinks(s.guardianPhone)) : '') : '') +
+      (!(s.motherName || s.fatherName || s.guardianName) ? row('Parent / Guardian', esc(primaryName(s) || '—')) : '') +
+      (!(s.motherPhone || s.fatherPhone || s.guardianPhone) ? row('Phone', phoneLinks(primaryPhone(s), s.whatsapp)) : '') +
+      (s.whatsapp ? row('WhatsApp', esc(s.whatsapp)) : '') +
+      (s.address ? row('Address', esc(s.address)) : '') +
+      (isAdmin() ? row('Yearly fee', num(s.yearlyFee) ? inr(s.yearlyFee) : '—') : '') +
+      (isAdmin() ? row('Monthly fee', effectiveMonthly(s) ? inr(effectiveMonthly(s)) + (num(s.yearlyFee) && !(s.classId === 'nursery' && num(s.monthlyFee) > 0) ? ' <small class="muted">(yearly ÷ 12)</small>' : (s.classId === 'nursery' && num(s.monthlyFee) > 0 ? ' <small class="muted">(nursery)</small>' : '')) : '—') : '') +
       row('Emergency contact', esc(s.emergency || '—')) + row('Authorised pickup', esc(s.pickup || '—')) + '</div>' +
       (s.medical ? '<div class="callout med"><b>⚕️ Medical notes</b><p>' + esc(s.medical) + '</p></div>' : '') +
       (s.notes ? '<div class="callout"><b>📝 Notes</b><p>' + esc(s.notes) + '</p></div>' : '') +
@@ -1286,8 +1544,8 @@
         (pays.length ? '<ul class="mini-list">' + pays.slice(0, 6).map(function (p) { return '<li><span><b>' + esc(periodText(p)) + '</b><small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><span><b>' + inr(p.amount) + '</b> <button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="Receipt">🧾</button></span></li>'; }).join('') + '</ul>' : '<p class="muted">No payments yet.</p>');
     }
     if (isAdmin()) body += '<div id="student-parent-box">' + studentParentHTML(s) + '</div>';
-    body += '<div class="form-actions">' + (isAdmin() ? '<button class="btn ghost" data-act="pay-add" data-student="' + esc(s.id) + '">💰 Record payment</button>' : '') + '<button class="btn primary" data-act="student-edit" data-id="' + esc(s.id) + '">✏️ Edit</button></div>';
-    openModal({ title: 'Student details', size: 'wide', body: body });
+    body += '<div class="form-actions">' + (isAdmin() && !isInactive(s) ? '<button class="btn ghost" data-act="pay-add" data-student="' + esc(s.id) + '">💰 Record payment</button>' : '') + '<button class="btn primary" data-act="student-edit" data-id="' + esc(s.id) + '">✏️ Edit</button></div>';
+    openModal({ title: 'Student details', size: 'wide', body: body, mount: function (root) { hydratePhotos(root); } });
     if (isAdmin()) PX.loadLinks().then(function () { var b = document.getElementById('student-parent-box'); if (b) b.innerHTML = studentParentHTML(s); });
   }
 
@@ -1404,8 +1662,8 @@
       return '<section class="card"><h3>' + CLASS_BY_ID[cid].emoji + ' ' + esc(className(cid)) + ' <small class="muted">' + (st.marked ? st.P + ' present of ' + st.total : 'not marked') + '</small></h3>' +
         (!st.marked ? '<p class="muted">Attendance not marked for this date.</p>' : away.length ? '<ul class="mini-list">' + away.map(function (s) {
           var v = rec[s.id];
-          var msg = 'Dear ' + (s.parentName || 'Parent') + ', this is ' + S.settings.schoolName + '. ' + s.name + ' was marked ' + ATT[v].label.toLowerCase() + ' on ' + fmtDate(date) + '. Hope all is well! 🙏';
-          return '<li><span><b>' + esc(s.name) + '</b> ' + badge(ATT[v].label, v === 'A' ? '#ff7a6b' : v === 'L' ? '#ffc93c' : '#38a8e0') + '<small>' + esc(s.parentName || '') + '</small></span>' + phoneLinks(s.phone, s.whatsapp, msg) + '</li>';
+          var msg = 'Dear ' + (primaryName(s) || 'Parent') + ', this is ' + S.settings.schoolName + '. ' + s.name + ' was marked ' + ATT[v].label.toLowerCase() + ' on ' + fmtDate(date) + '. Hope all is well! 🙏';
+          return '<li><span><b>' + esc(s.name) + '</b> ' + badge(ATT[v].label, v === 'A' ? '#ff7a6b' : v === 'L' ? '#ffc93c' : '#38a8e0') + '<small>' + esc(primaryName(s) || '') + '</small></span>' + phoneLinks(primaryPhone(s), s.whatsapp, msg) + '</li>';
         }).join('') + '</ul>' : '<p class="muted">Everyone was present 🎉</p>') + '</section>';
     }).join('');
     return any ? html : emptyState('🌱', 'No students yet', 'Add students to see absences here.');
@@ -1419,7 +1677,7 @@
     var ym = UI.feeMonth;
     var studs = activeStudents();
     var billable = studs.filter(function (s) { return feeApplies(s, ym); });
-    var expected = billable.reduce(function (a, s) { return a + num(s.monthlyFee); }, 0);
+    var expected = billable.reduce(function (a, s) { return a + effectiveMonthly(s); }, 0);
     var paysM = S.payments.filter(function (p) { return coversMonth(p, ym); });
     var received = paysM.reduce(function (a, p) { return a + payTowards(p, ym); }, 0);
     var pendingList = billable.map(function (s) { return { s: s, paid: paidFor(s.id, ym), due: dueFor(s, ym) }; }).filter(function (x) { return x.due > 0; });
@@ -1430,7 +1688,7 @@
       stat('💰', 'Received towards ' + fmtMonth(ym), inr(received), paysM.length + ' receipt' + (paysM.length === 1 ? '' : 's'), 'green') +
       stat('⏳', 'Pending for ' + fmtMonth(ym), inr(pending), pendingList.length + ' student' + (pendingList.length === 1 ? '' : 's'), 'coral') + '</div>';
     html += dupReceiptsHTML();
-    var noFee = studs.filter(function (s) { return !num(s.monthlyFee); }).length;
+    var noFee = studs.filter(function (s) { return !effectiveMonthly(s); }).length;
     if (noFee) html += '<p class="note">ℹ️ ' + noFee + ' active student' + (noFee === 1 ? ' has' : 's have') + ' no monthly fee set, so they are not counted. Set it in the student’s profile.</p>';
     html += '<div class="seg-tabs"><button type="button" class="' + (UI.feeTab === 'pending' ? 'active' : '') + '" data-act="fee-tab" data-tab="pending">⏳ Pending (' + pendingList.length + ')</button><button type="button" class="' + (UI.feeTab === 'payments' ? 'active' : '') + '" data-act="fee-tab" data-tab="payments">🧾 Payments (' + paysM.length + ')</button></div>';
     if (UI.feeTab === 'payments') {
@@ -1445,9 +1703,9 @@
     if (!pendingList.length) return html + emptyState('🎉', 'All fees collected for ' + fmtMonth(ym), 'Nobody has pending fees for this month.');
     return html + '<div class="table-wrap"><table class="table responsive"><thead><tr><th>Student</th><th>Class</th><th class="num">Fee</th><th class="num">Paid</th><th class="num">Due</th><th>Parent</th><th class="act-col"><span class="sr">Actions</span></th></tr></thead><tbody>' +
       pendingList.sort(function (a, b) { return byName(a.s, b.s); }).map(function (x) {
-        var msg = 'Dear ' + (x.s.parentName || 'Parent') + ', a gentle reminder from ' + S.settings.schoolName + ': ' + x.s.name + '’s fee for ' + fmtMonth(ym) + ' of ' + inr(x.due) + ' is pending. Please ignore if already paid. Thank you! 🙏';
-        return '<tr><td data-label="Student"><b>' + esc(x.s.name) + '</b></td><td data-label="Class">' + esc(className(x.s.classId)) + '</td><td data-label="Fee" class="num">' + inr(x.s.monthlyFee) + '</td><td data-label="Paid" class="num">' + inr(x.paid) + '</td><td data-label="Due" class="num"><b class="coral-t">' + inr(x.due) + '</b></td>' +
-          '<td data-label="Parent">' + esc(x.s.parentName || '') + ' ' + phoneLinks(x.s.phone, x.s.whatsapp, msg) + '</td><td class="actions"><button class="btn small primary" data-act="pay-add" data-student="' + esc(x.s.id) + '" data-month="' + ym + '">Collect</button></td></tr>';
+        var msg = 'Dear ' + (primaryName(x.s) || 'Parent') + ', a gentle reminder from ' + S.settings.schoolName + ': ' + x.s.name + '’s fee for ' + fmtMonth(ym) + ' of ' + inr(x.due) + ' is pending. Please ignore if already paid. Thank you! 🙏';
+        return '<tr><td data-label="Student"><b>' + esc(x.s.name) + '</b></td><td data-label="Class">' + esc(classLabel(x.s)) + '</td><td data-label="Fee" class="num">' + inr(effectiveMonthly(x.s)) + '</td><td data-label="Paid" class="num">' + inr(x.paid) + '</td><td data-label="Due" class="num"><b class="coral-t">' + inr(x.due) + '</b></td>' +
+          '<td data-label="Parent">' + esc(primaryName(x.s) || '') + ' ' + phoneLinks(primaryPhone(x.s), x.s.whatsapp, msg) + '</td><td class="actions"><button class="btn small primary" data-act="pay-add" data-student="' + esc(x.s.id) + '" data-month="' + ym + '">Collect</button></td></tr>';
       }).join('') + '</tbody></table></div>';
   }
   function nextReceiptNo() {
@@ -1477,7 +1735,7 @@
   }
   function allocate(s, months, amount) {
     // Fill each month's due in order; anything left over goes to the last month.
-    var left = amount, alloc = {}, fee = num(s.monthlyFee);
+    var left = amount, alloc = {}, fee = effectiveMonthly(s);
     months.forEach(function (m, i) {
       var due = fee > 0 ? Math.max(0, fee - paidFor(s.id, m)) : 0;
       var put = i === months.length - 1 ? left : Math.min(left, due);
@@ -1493,7 +1751,7 @@
     if (!studs.length) { toast('Add a student first', 'err'); return; }
     var groups = CLASSES.map(function (c) {
       var l = studs.filter(function (s) { return s.classId === c.id; });
-      return l.length ? '<optgroup label="' + esc(c.name) + '">' + l.map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === studentId ? ' selected' : '') + '>' + esc(s.name) + ' — ' + esc(s.parentName || '') + '</option>'; }).join('') + '</optgroup>' : '';
+      return l.length ? '<optgroup label="' + esc(c.name) + '">' + l.map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === studentId ? ' selected' : '') + '>' + esc(s.name) + ' — ' + esc(primaryName(s) || '') + '</option>'; }).join('') + '</optgroup>' : '';
     }).join('');
     var r = nextReceiptNo();
     var body = '<form class="form" novalidate><div class="grid2">' +
@@ -1516,7 +1774,7 @@
           var s = studentById(sel.value);
           if (!s || !isMonth(mon.value)) { hint.hidden = true; return; }
           var ms = monthsFrom(mon.value, parseInt(cnt.value, 10) || 1);
-          var fee = num(s.monthlyFee), paid = ms.reduce(function (a, m) { return a + paidFor(s.id, m); }, 0), due = ms.reduce(function (a, m) { return a + Math.max(0, fee - paidFor(s.id, m)); }, 0);
+          var fee = effectiveMonthly(s), paid = ms.reduce(function (a, m) { return a + paidFor(s.id, m); }, 0), due = ms.reduce(function (a, m) { return a + Math.max(0, fee - paidFor(s.id, m)); }, 0);
           hint.hidden = false;
           hint.innerHTML = '<b>' + esc(s.name) + '</b> · ' + esc(window.LWReceipt ? window.LWReceipt.period(ms) : fmtMonth(mon.value)) + ': fee ' + inr(fee * ms.length) + ' · paid ' + inr(paid) + ' · <b>due ' + inr(due) + '</b>' + (mon.value < admMonth(s) ? '<br><small class="warn-t">This month is before the admission date (' + fmtDate(s.admissionDate) + ').</small>' : '');
           if (!amtTouched) amt.value = due > 0 ? due : '';
@@ -1534,13 +1792,13 @@
         if (!ok) return false;
         var n = parseInt(g('count'), 10); if (!(n >= 1 && n <= 12)) n = 1;
         var ms = monthsFrom(g('month'), n);
-        var due = ms.reduce(function (a, m) { return a + Math.max(0, num(s.monthlyFee) - paidFor(s.id, m)); }, 0);
-        return (num(s.monthlyFee) && amount > due ? confirmBox('This is more than the amount due for ' + periodText({ months: ms }) + ' (' + inr(due) + '). Save anyway?', { ok: 'Save', danger: false, title: 'Amount more than due' }) : Promise.resolve(true)).then(function (go) {
+        var due = ms.reduce(function (a, m) { return a + Math.max(0, effectiveMonthly(s) - paidFor(s.id, m)); }, 0);
+        return (effectiveMonthly(s) && amount > due ? confirmBox('This is more than the amount due for ' + periodText({ months: ms }) + ' (' + inr(due) + '). Save anyway?', { ok: 'Save', danger: false, title: 'Amount more than due' }) : Promise.resolve(true)).then(function (go) {
           if (!go) return false;
           var r = nextReceiptNo();
           var amt2 = Math.round(amount * 100) / 100;
-          var p = { id: uid(), seq: r.seq, receiptNo: r.no, studentId: s.id, studentName: s.name, parentName: s.parentName || '', classId: s.classId, month: ms[0],
-            amount: amt2, mode: g('mode'), ref: g('ref'), paidOn: g('paidOn'), note: g('note'), receivedBy: (ME && ME.name) || S.settings.owner || '', monthlyFee: num(s.monthlyFee), createdAt: new Date().toISOString() };
+          var p = { id: uid(), seq: r.seq, receiptNo: r.no, studentId: s.id, studentName: s.name, parentName: primaryName(s) || '', classId: s.classId, month: ms[0],
+            amount: amt2, mode: g('mode'), ref: g('ref'), paidOn: g('paidOn'), note: g('note'), receivedBy: (ME && ME.name) || S.settings.owner || '', monthlyFee: effectiveMonthly(s), yearlyFee: num(s.yearlyFee), createdAt: new Date().toISOString() };
           if (ms.length > 1) { p.months = ms; p.alloc = allocate(s, ms, amt2); }
           S.payments.push(p);
           p.balanceAfter = outstanding(s);
@@ -1557,11 +1815,11 @@
   function receiptData(p, copy) {
     var st = S.settings, s = studentById(p.studentId);
     var hasSnap = p.balanceAfter != null && isFinite(Number(p.balanceAfter));
-    var bal = hasSnap ? num(p.balanceAfter) : (s && num(s.monthlyFee) ? outstanding(s) : null);
+    var bal = hasSnap ? num(p.balanceAfter) : (s && effectiveMonthly(s) ? outstanding(s) : null);
     return {
       school: { name: st.schoolName, address: st.address, phone: st.phone, email: st.email }, logo: 'assets/logo.jpeg',
-      receiptNo: p.receiptNo, date: p.paidOn, studentName: p.studentName, className: className(p.classId), parentName: p.parentName || (s && s.parentName) || '',
-      months: payMonths(p), monthlyFee: p.monthlyFee != null ? p.monthlyFee : (s ? s.monthlyFee : 0), amount: p.amount, mode: p.mode, ref: p.ref,
+      receiptNo: p.receiptNo, date: p.paidOn, studentName: p.studentName, className: (s ? classLabel(s) : className(p.classId)), parentName: p.parentName || (s && primaryName(s)) || '',
+      months: payMonths(p), monthlyFee: p.monthlyFee != null ? p.monthlyFee : (s ? effectiveMonthly(s) : 0), yearlyFee: (p.yearlyFee != null ? p.yearlyFee : (s ? s.yearlyFee : 0)), amount: p.amount, mode: p.mode, ref: p.ref,
       balance: bal, balanceLabel: hasSnap ? 'Balance due after this payment' : 'Balance due (as on ' + fmtDate(todayISO()) + ')',
       receivedBy: p.receivedBy || '', copy: copy || ''
     };
@@ -1569,14 +1827,14 @@
   function receiptText(p) { return window.LWReceipt.text(receiptData(p)); }
   function findPayment(id) { return S.payments.filter(function (p) { return p.id === id; })[0]; }
   function receiptWaLink(p) {
-    var s = studentById(p.studentId), wa = s ? (s.whatsapp || s.phone) : '';
+    var s = studentById(p.studentId), wa = s ? (s.whatsapp || primaryPhone(s)) : '';
     return wa && validPhone(wa) ? waHref(wa, receiptText(p)) : 'https://wa.me/?text=' + encodeURIComponent(receiptText(p));
   }
   function receiptFileName(p) { return 'Receipt ' + p.receiptNo + ' - ' + p.studentName; }
   function openReceipt(id) {
     var p = findPayment(id);
     if (!p || !window.LWReceipt) return;
-    var s = studentById(p.studentId), wa = s ? (s.whatsapp || s.phone) : '';
+    var s = studentById(p.studentId), wa = s ? (s.whatsapp || primaryPhone(s)) : '';
     openModal({
       title: 'Receipt ' + p.receiptNo, size: 'wide',
       body: '<div class="receipt-preview">' + window.LWReceipt.html(receiptData(p)) + '</div>' +
@@ -1615,31 +1873,38 @@
     var pays = S.payments.filter(function (p) { return p.studentId === sid; }).sort(function (a, b) { return (b.paidOn || '') + String(b.seq || 0).padStart(9, '0') < (a.paidOn || '') + String(a.seq || 0).padStart(9, '0') ? -1 : 1; });
     var name = s ? s.name : (pays[0] ? pays[0].studentName : 'Student');
     var total = pays.reduce(function (a, p) { return a + num(p.amount); }, 0);
-    var body = '<div class="rcpt-total"><span>Receipts: <b>' + pays.length + '</b></span><span>Total paid: <b>' + inr(total) + '</b></span>' + (s && num(s.monthlyFee) ? '<span>Monthly fee: <b>' + inr(s.monthlyFee) + '</b></span><span>Pending now: <b class="coral-t">' + inr(outstanding(s)) + '</b></span>' : '') + '</div>' +
+    var body = '<div class="rcpt-total"><span>Receipts: <b>' + pays.length + '</b></span><span>Total paid: <b>' + inr(total) + '</b></span>' + (s && num(s.yearlyFee) ? '<span>Yearly fee: <b>' + inr(s.yearlyFee) + '</b></span>' : '') + (s && effectiveMonthly(s) ? '<span>Monthly fee: <b>' + inr(effectiveMonthly(s)) + '</b></span><span>Pending now: <b class="coral-t">' + inr(outstanding(s)) + '</b></span>' : '') + '</div>' +
       (pays.length ? '<div class="table-wrap"><table class="table responsive"><thead><tr><th>Receipt</th><th>Paid on</th><th>Fee for</th><th>Mode</th><th class="num">Amount</th><th class="act-col"><span class="sr">Actions</span></th></tr></thead><tbody>' +
         pays.map(function (p) {
           return '<tr><td data-label="Receipt"><b>' + esc(p.receiptNo) + '</b></td><td data-label="Paid on">' + fmtDate(p.paidOn) + '</td><td data-label="Fee for">' + esc(periodText(p)) + '</td><td data-label="Mode">' + esc(p.mode) + '</td><td data-label="Amount" class="num"><b>' + inr(p.amount) + '</b></td>' +
             '<td class="actions"><button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="View / print receipt" aria-label="Receipt ' + esc(p.receiptNo) + '">🧾</button></td></tr>';
         }).join('') + '</tbody></table></div>' : '<p class="muted">No payments yet.</p>') +
-      (s && s.status !== 'Left' ? '<div class="form-actions"><button class="btn primary" data-act="pay-add" data-student="' + esc(sid) + '">💰 Record payment</button></div>' : '');
+      (s && !isInactive(s) ? '<div class="form-actions"><button class="btn primary" data-act="pay-add" data-student="' + esc(sid) + '">💰 Record payment</button></div>' : '');
     openModal({ title: '🧾 Receipts · ' + name, size: 'wide', body: body });
   }
 
   /* =====================================================================
    * ENQUIRIES
    * ===================================================================== */
+  function enqFeedback(e) {
+    return (e && ENQ_FEEDBACK.indexOf(e.feedback) >= 0) ? e.feedback : '';
+  }
   function viewEnquiries() {
     var today = todayISO(), ym = thisMonth();
-    var isDue = function (e) { return e.followUp && e.followUp <= today && (e.status === 'New' || e.status === 'Visited'); };
+    var isDue = function (e) { return e.followUp && e.followUp <= today && !isConverted(e) && e.status !== 'Not interested'; };
     var month = S.enquiries.filter(function (e) { return (e.date || '').slice(0, 7) === ym; });
     var dueN = S.enquiries.filter(isDue).length;
     var html = '<div class="stats">' + stat('📝', 'Enquiries this month', String(month.length), fmtMonth(ym), 'sky') +
-      stat('🎓', 'Converted this month', String(month.filter(function (e) { return e.status === 'Admitted'; }).length), 'Status “Admitted”', 'green') +
+      stat('🎓', 'Converted this month', String(month.filter(isConverted).length), 'Admitted from an enquiry', 'green') +
       stat('📞', 'Follow-ups due', String(dueN), 'Today or overdue', dueN ? 'coral' : 'yellow') + '</div>';
-    html += '<div class="toolbar"><input type="search" class="search" placeholder="🔍 Search child, parent or phone" value="' + esc(UI.enqSearch) + '" data-input="enq-search" aria-label="Search enquiries">' +
+    html += '<div class="toolbar"><input type="search" class="search" placeholder="🔍 Search child, parent, phone or address" value="' + esc(UI.enqSearch) + '" data-input="enq-search" aria-label="Search enquiries">' +
       '<button class="btn primary" data-act="enq-add">➕ New enquiry</button></div>';
-    html += '<div class="chips">' + ['All', 'Due'].concat(ENQ_STATUS).map(function (f) {
-      var n = f === 'All' ? S.enquiries.length : f === 'Due' ? dueN : S.enquiries.filter(function (e) { return e.status === f; }).length;
+    var chips = ['All', 'Interested', 'Doubtful', 'Converted', 'Due'];
+    html += '<div class="chips">' + chips.map(function (f) {
+      var n = f === 'All' ? S.enquiries.length
+        : f === 'Due' ? dueN
+        : f === 'Converted' ? S.enquiries.filter(isConverted).length
+        : S.enquiries.filter(function (e) { return enqFeedback(e) === f; }).length;
       return '<button type="button" class="chip' + (UI.enqFilter === f ? ' active' : '') + '" data-act="enq-filter" data-f="' + esc(f) + '">' + esc(f === 'Due' ? '📞 Due' : f) + ' <span>' + n + '</span></button>';
     }).join('') + '</div>';
     html += '<div id="enq-list">' + enqListHTML() + '</div>';
@@ -1647,12 +1912,14 @@
   }
   function enqListHTML() {
     var today = todayISO(), q = UI.enqSearch.trim().toLowerCase();
-    var isDue = function (e) { return e.followUp && e.followUp <= today && (e.status === 'New' || e.status === 'Visited'); };
+    var isDue = function (e) { return e.followUp && e.followUp <= today && !isConverted(e) && e.status !== 'Not interested'; };
     if (!S.enquiries.length) return emptyState('📝', 'No enquiries yet', 'When a parent calls, messages or walks in, note it here so no follow-up is missed.', '<button class="btn primary" data-act="enq-add">➕ Add first enquiry</button>');
     var list = S.enquiries.filter(function (e) {
       if (UI.enqFilter === 'Due' && !isDue(e)) return false;
-      if (UI.enqFilter !== 'All' && UI.enqFilter !== 'Due' && e.status !== UI.enqFilter) return false;
-      return !q || [e.childName, e.parentName, e.phone].join(' ').toLowerCase().indexOf(q) >= 0;
+      if (UI.enqFilter === 'Converted' && !isConverted(e)) return false;
+      if (UI.enqFilter === 'Interested' || UI.enqFilter === 'Doubtful') { if (enqFeedback(e) !== UI.enqFilter) return false; }
+      var hay = [e.childName, e.fatherName, e.motherName, e.parentName, e.fatherPhone, e.motherPhone, e.phone, e.address].join(' ').toLowerCase();
+      return !q || hay.indexOf(q) >= 0;
     }).sort(function (a, b) {
       var da = isDue(a) ? 0 : 1, db = isDue(b) ? 0 : 1;
       if (da !== db) return da - db;
@@ -1661,55 +1928,87 @@
     if (!list.length) return emptyState('🔍', 'Nothing here', 'No enquiries match this filter.');
     return '<div class="enq-grid">' + list.map(function (e) {
       var due = isDue(e), overdue = due && e.followUp < today;
-      var age = e.childAge !== '' && e.childAge != null ? e.childAge + ' yrs' : '';
+      var fb = enqFeedback(e);
+      var age = '';
+      if (isISODate(e.dob)) age = ageText(e.dob);
+      else if (e.childAge !== '' && e.childAge != null) age = e.childAge + ' yrs';
+      var father = e.fatherName || (!e.motherName ? e.parentName : '');
+      var mother = e.motherName || '';
       return '<article class="enq' + (due ? (overdue ? ' overdue' : ' due') : '') + '">' +
         (due ? '<div class="enq-flag">' + (overdue ? '⚠️ Follow-up overdue (' + fmtDate(e.followUp) + ')' : '📞 Follow up today') + '</div>' : '') +
-        '<div class="enq-top"><div><h3>' + esc(e.childName) + (age ? ' <small>' + esc(age) + '</small>' : '') + '</h3><p>' + esc(e.parentName) + '</p></div>' +
-        '<select class="status-sel" data-change="enq-status" data-id="' + esc(e.id) + '" aria-label="Status" style="--b:' + ENQ_COLORS[e.status] + '">' + options(ENQ_STATUS, e.status) + '</select></div>' +
-        '<div class="enq-meta">' + phoneLinks(e.phone) + '</div>' +
-        '<div class="enq-meta"><span>📅 ' + fmtDate(e.date) + '</span><span>📣 ' + esc(e.source || '—') + '</span>' + (e.followUp && !due ? '<span>🔔 ' + fmtDate(e.followUp) + '</span>' : '') + (suggestClass(num(e.childAge)) && e.childAge ? '<span>🏫 ' + esc(className(suggestClass(num(e.childAge)))) + '</span>' : '') + '</div>' +
+        '<div class="enq-top"><div><h3>' + esc(e.childName) + (age ? ' <small>' + esc(age) + '</small>' : '') + '</h3>' +
+        '<p>' + (father ? 'Father: ' + esc(father) : '') + (father && mother ? ' · ' : '') + (mother ? 'Mother: ' + esc(mother) : '') + '</p></div>' +
+        (fb ? '<span class="tag ' + (fb === 'Interested' ? 'fb-in' : 'fb-db') + '">' + esc(fb) + '</span>' : '<span class="tag">No feedback</span>') +
+        '</div>' +
+        '<div class="enq-meta">' +
+          (e.fatherPhone || (!e.motherPhone && e.phone) ? '<span>Father ' + phoneLinks(e.fatherPhone || e.phone) + '</span>' : '') +
+          (e.motherPhone ? '<span>Mother ' + phoneLinks(e.motherPhone) + '</span>' : '') +
+        '</div>' +
+        '<div class="enq-meta"><span>📅 ' + fmtDate(e.date) + '</span>' + (e.source ? '<span>📣 ' + esc(e.source) + '</span>' : '') +
+          (e.followUp && !due ? '<span>🔔 ' + fmtDate(e.followUp) + '</span>' : '') +
+          (e.address ? '<span>🏠 ' + esc(e.address) + '</span>' : '') + '</div>' +
         (e.notes ? '<p class="enq-notes">' + esc(e.notes) + '</p>' : '') +
-        '<div class="enq-actions">' + (e.status === 'Admitted' && e.studentId && studentById(e.studentId) ? '<span class="tag ok">🎓 Admitted</span>' : '<button class="btn small primary" data-act="enq-convert" data-id="' + esc(e.id) + '">🎓 Convert to student</button>') +
+        '<div class="enq-actions">' + (isConverted(e) && e.studentId && studentById(e.studentId) ? '<span class="tag ok">🎓 Admitted</span>' : '<button class="btn small primary" data-act="enq-convert" data-id="' + esc(e.id) + '">🎓 Convert to admission</button>') +
         '<button class="icon-btn" data-act="enq-edit" data-id="' + esc(e.id) + '" title="Edit" aria-label="Edit">✏️</button><button class="icon-btn" data-act="enq-del" data-id="' + esc(e.id) + '" title="Delete" aria-label="Delete">🗑️</button></div></article>';
     }).join('') + '</div>';
   }
   function findEnq(id) { return S.enquiries.filter(function (e) { return e.id === id; })[0]; }
   function openEnquiryForm(e) {
-    var v = Object.assign({ date: todayISO(), status: 'New', source: 'Walk-in' }, e || {});
+    var v = Object.assign({ date: todayISO(), feedback: 'Interested', source: 'Walk-in' }, e || {});
+    if (!v.fatherName && v.parentName && !v.motherName) v.fatherName = v.parentName;
+    if (!v.fatherPhone && v.phone && !v.motherPhone) v.fatherPhone = v.phone;
     var body = '<form class="form" novalidate><div class="grid2">' +
       field('Enquiry date *', '<input type="date" name="date" max="' + todayISO() + '" value="' + esc(v.date) + '" required>') +
       field('Source', '<select name="source">' + options(ENQ_SOURCES, v.source) + '</select>') +
-      field('Parent name *', '<input name="parentName" maxlength="80" value="' + esc(v.parentName) + '" required>') +
-      field('Phone *', '<input type="tel" name="phone" inputmode="tel" maxlength="16" placeholder="10-digit mobile" value="' + esc(v.phone) + '" required>') +
-      field('Child name *', '<input name="childName" maxlength="80" value="' + esc(v.childName) + '" required>') +
-      field('Child age (years)', '<input type="number" name="childAge" min="1" max="8" step="0.5" inputmode="decimal" placeholder="e.g. 3.5" value="' + esc(v.childAge == null ? '' : v.childAge) + '">', '<small class="hint" id="enq-hint"></small>') +
-      field('Status', '<select name="status">' + options(ENQ_STATUS, v.status) + '</select>') +
+      field('Student name *', '<input name="childName" maxlength="80" value="' + esc(v.childName) + '" required>') +
+      field('Date of birth', '<input type="date" name="dob" max="' + todayISO() + '" value="' + esc(v.dob) + '">', '<small class="hint" id="enq-hint"></small>') +
+      field('Father’s name *', '<input name="fatherName" maxlength="80" value="' + esc(v.fatherName) + '" required>') +
+      field('Father’s mobile *', '<input type="tel" name="fatherPhone" inputmode="tel" maxlength="16" placeholder="10-digit mobile" value="' + esc(v.fatherPhone) + '" required>') +
+      field('Mother’s name *', '<input name="motherName" maxlength="80" value="' + esc(v.motherName) + '" required>') +
+      field('Mother’s mobile *', '<input type="tel" name="motherPhone" inputmode="tel" maxlength="16" placeholder="10-digit mobile" value="' + esc(v.motherPhone) + '" required>') +
+      field('Father’s qualification', '<input name="fatherQual" maxlength="80" placeholder="Optional" value="' + esc(v.fatherQual) + '">') +
+      field('Mother’s qualification', '<input name="motherQual" maxlength="80" placeholder="Optional" value="' + esc(v.motherQual) + '">') +
+      field('Address', '<textarea name="address" rows="2" maxlength="250" placeholder="House / street, area, town">' + esc(v.address) + '</textarea>', '', 'span2') +
+      field('Feedback *', '<select name="feedback">' + options(ENQ_FEEDBACK, v.feedback) + '</select>') +
       field('Follow-up date', '<input type="date" name="followUp" value="' + esc(v.followUp) + '">') +
       '</div>' + field('Notes', '<textarea name="notes" rows="3" maxlength="1500" placeholder="Timings asked, fee discussed, visit planned…">' + esc(v.notes) + '</textarea>') +
       '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">' + (e ? 'Save changes' : 'Add enquiry') + '</button></div></form>';
     openModal({
       title: e ? 'Edit enquiry' : 'New enquiry', size: 'wide', body: body,
       mount: function (root) {
-        var a = $('[name=childAge]', root), h = $('#enq-hint', root);
-        var u = function () { var y = parseFloat(a.value); h.textContent = isFinite(y) && y > 0 ? 'Suggested class: ' + className(suggestClass(y)) : ''; };
-        a.addEventListener('input', u); u();
+        var dob = $('[name=dob]', root), h = $('#enq-hint', root);
+        var u = function () {
+          var a = ageParts(dob.value);
+          h.textContent = a ? ('Age today: ' + a.y + ' y ' + a.m + ' m · suggested class: ' + className(suggestClass(a.years))) : '';
+        };
+        if (dob) { dob.addEventListener('input', u); dob.addEventListener('change', u); u(); }
       },
       onSubmit: function (form, fd) {
         var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
         var ok = true;
-        var d = { date: g('date'), source: g('source'), parentName: g('parentName'), phone: g('phone'), childName: g('childName'), childAge: g('childAge'), status: g('status'), followUp: g('followUp'), notes: g('notes') };
+        var d = { date: g('date'), source: g('source'), childName: g('childName'), dob: g('dob'),
+          fatherName: g('fatherName'), fatherPhone: g('fatherPhone'), motherName: g('motherName'), motherPhone: g('motherPhone'),
+          fatherQual: g('fatherQual'), motherQual: g('motherQual'), address: g('address'), feedback: g('feedback'), followUp: g('followUp'), notes: g('notes') };
         if (!isISODate(d.date) || d.date > todayISO()) { fieldError(form, 'date', 'Choose a valid date (not in the future)'); ok = false; }
-        if (d.parentName.length < 2) { fieldError(form, 'parentName', 'Please enter the parent’s name'); ok = false; }
-        if (!validPhone(d.phone)) { fieldError(form, 'phone', 'Enter a valid 10-digit Indian mobile number'); ok = false; }
-        if (d.childName.length < 1) { fieldError(form, 'childName', 'Please enter the child’s name'); ok = false; }
-        if (d.childAge !== '' && !(+d.childAge >= 1 && +d.childAge <= 8)) { fieldError(form, 'childAge', 'Age should be between 1 and 8 years'); ok = false; }
+        if (d.childName.length < 1) { fieldError(form, 'childName', 'Please enter the student’s name'); ok = false; }
+        if (d.dob && !isISODate(d.dob)) { fieldError(form, 'dob', 'Choose a valid date of birth'); ok = false; }
+        else if (d.dob && d.dob > todayISO()) { fieldError(form, 'dob', 'Date of birth can’t be in the future'); ok = false; }
+        if (d.fatherName.length < 2) { fieldError(form, 'fatherName', 'Please enter the father’s name'); ok = false; }
+        if (!validPhone(d.fatherPhone)) { fieldError(form, 'fatherPhone', 'Enter a valid 10-digit Indian mobile number'); ok = false; }
+        if (d.motherName.length < 2) { fieldError(form, 'motherName', 'Please enter the mother’s name'); ok = false; }
+        if (!validPhone(d.motherPhone)) { fieldError(form, 'motherPhone', 'Enter a valid 10-digit Indian mobile number'); ok = false; }
+        if (ENQ_FEEDBACK.indexOf(d.feedback) < 0) { fieldError(form, 'feedback', 'Please choose Interested or Doubtful'); ok = false; }
         if (d.followUp && !isISODate(d.followUp)) { fieldError(form, 'followUp', 'Invalid date'); ok = false; }
-        if (ENQ_STATUS.indexOf(d.status) < 0) d.status = 'New';
         if (ENQ_SOURCES.indexOf(d.source) < 0) d.source = 'Walk-in';
         if (!ok) return false;
-        d.childAge = d.childAge === '' ? '' : +d.childAge;
+        // Keep legacy parentName/phone in sync so older lists and backups still work.
+        d.parentName = d.fatherName; d.phone = d.fatherPhone;
+        if (isISODate(d.dob)) {
+          var a = ageParts(d.dob);
+          d.childAge = a ? Math.round((a.years + a.m / 12) * 10) / 10 : '';
+        }
         if (e) Object.assign(e, d, { updatedAt: new Date().toISOString() });
-        else S.enquiries.push(Object.assign({ id: uid(), createdAt: new Date().toISOString() }, d));
+        else S.enquiries.push(Object.assign({ id: uid(), status: 'New', createdAt: new Date().toISOString() }, d));
         persist('enquiries');
         toast(e ? 'Enquiry updated' : 'Enquiry added');
         render();
@@ -1720,10 +2019,22 @@
   function convertEnquiry(id) {
     var e = findEnq(id);
     if (!e) return;
-    var pre = { name: e.childName, parentName: e.parentName, phone: e.phone, classId: suggestClass(e.childAge === '' ? NaN : num(e.childAge)) || '', admissionDate: todayISO(),
-      notes: 'Converted from enquiry dated ' + fmtDate(e.date) + ' (source: ' + (e.source || '—') + ').' + (e.notes ? ' ' + e.notes : '') };
-    openStudentForm(null, pre, function (s) {
-      e.status = 'Admitted'; e.studentId = s.id; e.updatedAt = new Date().toISOString();
+    var pre = {
+      name: e.childName,
+      dob: e.dob || '',
+      parentName: e.fatherName || e.parentName || '',
+      phone: e.fatherPhone || e.phone || '',
+      fatherName: e.fatherName || e.parentName || '',
+      fatherPhone: e.fatherPhone || e.phone || '',
+      motherName: e.motherName || '',
+      motherPhone: e.motherPhone || '',
+      address: e.address || '',
+      classId: isISODate(e.dob) ? (suggestClass((ageParts(e.dob) || {}).years) || '') : (suggestClass(e.childAge === '' ? NaN : num(e.childAge)) || ''),
+      admissionDate: todayISO(),
+      notes: 'Converted from enquiry dated ' + fmtDate(e.date) + (e.source ? ' (source: ' + e.source + ')' : '') + '.' + (e.notes ? ' ' + e.notes : '')
+    };
+    openStudentForm(null, pre, function (stu) {
+      e.status = 'Admitted'; e.studentId = stu.id; e.convertedAt = new Date().toISOString(); e.updatedAt = e.convertedAt;
       persist('enquiries');
     });
   }
@@ -1810,6 +2121,7 @@
       field('Address (on receipts)', '<textarea name="address" rows="2" maxlength="250">' + esc(st.address) + '</textarea>', '', 'span2') +
       field('Receipt prefix', '<input name="receiptPrefix" maxlength="8" value="' + esc(st.receiptPrefix) + '" pattern="[A-Za-z0-9-]+">', '<small class="hint">Next receipt: ' + esc(nextReceiptNo().no) + '</small>') +
       field('Track pending fees from', '<input type="month" name="feesStartMonth" value="' + esc(st.feesStartMonth) + '">', '<small class="hint">Months before this are not counted as pending</small>') +
+      field('Class sections', '<input name="sections" maxlength="80" value="' + esc(st.sections || 'A, B, C, D') + '">', '<small class="hint">Shown on the admission form after a class is chosen. Separate with commas, e.g. A, B, C, D</small>', 'span2') +
       '</div><button class="btn primary">Save school details</button></form></section>';
 
     html += '<section class="card"><h2>👩‍🏫 Class teachers</h2>' + (S.staff.length ? '<form class="form" data-form="class-teachers"><div class="grid2">' + CLASSES.map(function (c) {
@@ -2043,6 +2355,7 @@
       ['schoolName', 'owner', 'phone', 'email', 'address'].forEach(function (k) { S.settings[k] = g(k); });
       S.settings.receiptPrefix = g('receiptPrefix') || 'LW';
       S.settings.feesStartMonth = isMonth(g('feesStartMonth')) ? g('feesStartMonth') : '';
+      S.settings.sections = g('sections') || 'A, B, C, D';
       persist('settings');
       if (ME.role === 'admin') ME.name = S.settings.owner || 'Admin';
       toast('School details saved');
@@ -2082,8 +2395,8 @@
   function exportCSV(t) {
     var rows, date = todayISO();
     if (t === 'students') {
-      rows = [['Name', 'Class', 'Date of birth', 'Age', 'Parent / Guardian', 'Phone', 'WhatsApp', 'Admission date', 'Monthly fee (INR)', 'Status', 'Emergency contact', 'Authorised pickup', 'Medical notes', 'Notes']].concat(
-        S.students.slice().sort(byName).map(function (s) { return [s.name, className(s.classId), fmtDate(s.dob), ageText(s.dob), s.parentName, s.phone, s.whatsapp, fmtDate(s.admissionDate), num(s.monthlyFee), s.status || 'Active', s.emergency, s.pickup, s.medical, s.notes]; }));
+      rows = [['Name', 'Class', 'Section', 'Date of birth', 'Age', 'Mother', 'Mother mobile', 'Father', 'Father mobile', 'Guardian', 'Guardian mobile', 'Phone', 'WhatsApp', 'Address', 'Admission date', 'Yearly fee (INR)', 'Monthly fee (INR)', 'Status', 'Emergency contact', 'Authorised pickup', 'Medical notes', 'Notes']].concat(
+        S.students.slice().sort(byName).map(function (s) { return [s.name, className(s.classId), s.section || '', fmtDate(s.dob), ageText(s.dob), s.motherName || '', s.motherPhone || '', s.fatherName || '', s.fatherPhone || '', s.guardianName || '', s.guardianPhone || '', primaryPhone(s), s.whatsapp, s.address || '', fmtDate(s.admissionDate), num(s.yearlyFee), num(s.monthlyFee), s.status || 'Active', s.emergency, s.pickup, s.medical, s.notes]; }));
     } else if (t === 'attendance') {
       rows = [['Date', 'Class', 'Student', 'Status']];
       Object.keys(S.attendance).sort().forEach(function (d) {
@@ -2094,8 +2407,8 @@
       rows = [['Receipt no', 'Paid on', 'Student', 'Class', 'Parent', 'Fee for', 'Amount (INR)', 'Mode', 'Reference', 'Received by', 'Note']].concat(
         S.payments.slice().sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); }).map(function (p) { return [p.receiptNo, fmtDate(p.paidOn), p.studentName, className(p.classId), p.parentName, periodText(p), num(p.amount), p.mode, p.ref, p.receivedBy || '', p.note]; }));
     } else if (t === 'enquiries') {
-      rows = [['Date', 'Parent', 'Child', 'Age (yrs)', 'Phone', 'Source', 'Status', 'Follow-up', 'Notes']].concat(
-        S.enquiries.slice().sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }).map(function (e) { return [fmtDate(e.date), e.parentName, e.childName, e.childAge, e.phone, e.source, e.status, fmtDate(e.followUp), e.notes]; }));
+      rows = [['Date', 'Student', 'Date of birth', 'Father', 'Father mobile', 'Father qualification', 'Mother', 'Mother mobile', 'Mother qualification', 'Address', 'Feedback', 'Source', 'Status', 'Follow-up', 'Notes']].concat(
+        S.enquiries.slice().sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }).map(function (e) { return [fmtDate(e.date), e.childName, fmtDate(e.dob), e.fatherName || e.parentName, e.fatherPhone || e.phone, e.fatherQual || '', e.motherName || '', e.motherPhone || '', e.motherQual || '', e.address || '', e.feedback || '', e.source, e.status, fmtDate(e.followUp), e.notes]; }));
     } else if (t === 'staff') {
       rows = [['Name', 'Role', 'Phone', 'Class', 'Monthly salary (INR)', 'Joined', 'Status', 'Notes']].concat(
         S.staff.slice().sort(byName).map(function (s) { return [s.name, s.role, s.phone, s.classId ? className(s.classId) : '', num(s.salary), fmtDate(s.joined), s.status || 'Active', s.notes]; }));
@@ -2238,8 +2551,9 @@
       var s = studentById(attr(el, 'id'));
       if (!s) return;
       var np = S.payments.filter(function (p) { return p.studentId === s.id; }).length;
-      confirmBox('Delete ' + s.name + ' (' + className(s.classId) + ')? Their attendance records will also be removed.' + (np ? ' Their ' + np + ' payment receipt(s) will be kept for your accounts.' : '') + ' Tip: set status to “Left” instead to keep history.', { ok: 'Delete student' }).then(function (ok) {
+      confirmBox('Delete ' + s.name + ' (' + className(s.classId) + ')? Their attendance records will also be removed.' + (np ? ' Their ' + np + ' payment receipt(s) will be kept for your accounts.' : '') + ' Tip: set status to “Inactive” instead to keep history.', { ok: 'Delete student' }).then(function (ok) {
         if (!ok) return;
+        if (s.photoPath) removeStudentPhoto(s.photoPath);
         S.students = S.students.filter(function (x) { return x.id !== s.id; });
         Object.keys(S.attendance).forEach(function (d) { if (S.attendance[d][s.id]) { delete S.attendance[d][s.id]; if (!Object.keys(S.attendance[d]).length) delete S.attendance[d]; } });
         S.enquiries.forEach(function (e) { if (e.studentId === s.id) e.studentId = ''; });
@@ -2388,7 +2702,7 @@
     'erase': doErase
   };
   var CHANGES = {
-    'student-status': function (el) { UI.classStatus = el.value; var l = $('#student-list'); if (l) l.innerHTML = studentListHTML(UI.classTab); },
+    'student-status': function (el) { UI.classStatus = el.value; var l = $('#student-list'); if (l) { l.innerHTML = studentListHTML(UI.classTab); hydratePhotos(l); } },
     'att-class': function (el) { UI.attClass = el.value; render(); },
     'att-class-any': function (el) { UI.absClass = el.value; render(); },
     'att-date': function (el) {

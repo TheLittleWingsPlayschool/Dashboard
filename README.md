@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.3, cloud) + Parents app (v1.1)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.4, cloud) + Parents app (v1.2)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -10,13 +10,13 @@ admin and teachers see the same data on every phone, each with their own login.
 ## What it does
 - **Real logins**: email + password for every person (Supabase Auth). Roles: **Admin** and **Teacher**.
 - **Dashboard**: students per class (Toddlers, Nursery, LKG, UKG), today's attendance %, fees collected, pending fees, enquiries, charts, follow-ups due, birthdays.
-- **Classes**: students per class with search; add/edit/delete students (DOB with auto age, parent, tap-to-call and WhatsApp, fee, emergency contact, medical notes, authorised pickup).
+- **Classes / Admission**: students per class with search and an Active/Inactive filter; add/edit/delete students (DOB with auto age, mother/father/guardian names and mobiles, address, yearly fee for all classes, optional nursery monthly fee, section after class, status, private photo, emergency contact, medical notes, authorised pickup). Inactive students stay listed but are left out of attendance and fee dues.
 - **Attendance**: Present/Absent/Leave/Half-day, mark-all-present, monthly register, absent list with a WhatsApp message to the parent.
 - **Fees**: record payments (Cash/UPI/Bank) for one month or several months at once (term / advance), monthly pending list, and **professional fee receipts** (new in v2.3, see below).
-- **Enquiries**: leads and follow-ups; convert an enquiry into a student.
+- **Enquiries** (updated in v2.4): student name, date of birth, father/mother names and mobiles, optional qualifications, address, and feedback (Interested or Doubtful); search and filter; call and WhatsApp buttons; convert an enquiry into an admission (the form is pre-filled and the enquiry is marked converted).
 - **Staff**: role, phone, class and monthly salary (admin only).
 - **Notices** (new in v2.2): admin posts to the whole school or one class; teachers post to their own class. Pin, optional "show until" date, delete. Parents see them in the Parents app.
-- **Settings**: school details, class teachers, **teacher logins**, **parent logins**, change password, **backup/restore (JSON)**, **CSV exports**, and a one-time **import of old data** from v1.
+- **Settings**: school details (including configurable class sections), class teachers, **teacher logins**, **parent logins**, change password, **backup/restore (JSON)**, **CSV exports**, and a one-time **import of old data** from v1.
 - **Sync**: changes save online immediately. If the phone is offline they wait on the phone and upload automatically when the internet is back. The badge at the top shows **Online / Syncing / Offline · N / Sync problem** (tap it to retry). Other phones update live (Supabase Realtime), with a 30-second poll and a refresh whenever the app is reopened as back-ups.
 
 ## Roles and what the database allows
@@ -141,6 +141,13 @@ On Android and desktop Chrome, an **Install app** button may also appear on the 
 
 After the first visit, the app shell (the pages, styles, icons and the sign-in screen) is stored on the phone, so the dashboard still opens without internet. School data uses the same offline copy as before: changes wait on the phone and upload when you are back online. **Signing out still removes that data from the phone**, along with any changes not yet uploaded (the app warns first). When a new version is published, a banner says **New version available — tap to refresh**.
 
+## Enquiries, admission and photos (new in v2.4)
+The **Enquiries** page (admin only) records a child's name and date of birth, both parents' names and mobiles, optional qualifications, address, and feedback: **Interested** or **Doubtful**. You can search, filter by feedback, call or WhatsApp either parent, and **Convert to admission**, which opens the student form already filled in and marks the enquiry as converted.
+
+The admission / student form now has mother, father and guardian names and mobiles, the student's address, a **yearly fee** (all classes), an optional **monthly fee for Nursery only**, **status** (Active / Inactive) and a **section** chosen after the class (sections are set in Settings, default A–D). If the monthly fee is left blank, pending dues and receipts show yearly fee ÷ 12; existing stored payments are not changed. Inactive (and older “Left”) students stay on the list but are excluded from attendance and fee dues.
+
+Student photos are uploaded to a **private** Supabase Storage bucket, resized on the phone first (about 600 px JPEG). The bucket is never public: the app uses short-lived signed URLs. Teachers can see photos of their own class only; parents see only their own child's photo, plus section and status, in the Parents app. Enquiries stay hidden from teachers and parents (the database returns nothing).
+
 ## Files
 - `index.html`, `style.css`, `app.js` — the app. `Store` at the top of `app.js` is the only data layer (offline copy + sync).
 - `config.js` — Supabase project URL and the **publishable** key (public by design; access is controlled by login + RLS).
@@ -149,6 +156,7 @@ After the first visit, the app shell (the pages, styles, icons and the sign-in s
 - `supabase/schema.sql` — tables, RLS policies and triggers (documentation copy of what runs in the database).
 - `supabase/parents.sql` — v2.2 additions: parent role, `parent_students`, `notices`, parent-only RPCs and their RLS (run after `schema.sql`).
 - `supabase/receipts.sql` — v2.3: `parent_fees` / `parent_payments` RPCs for the Parents app Fees tab (run after `parents.sql`).
+- `supabase/enquiry_admission.sql` — v2.4: yearly fee column, private `student-photos` bucket and RLS, expanded `parent_children()` (section, status, photo path), and `parent_fees()` dues that treat Inactive like Left and use yearly÷12 when no nursery monthly fee is set (run after `receipts.sql`).
 - `assets/receipt.js`, `assets/receipt.css` — the shared fee receipt (HTML, print to one A4 page, PNG image, WhatsApp text, amount in words), used by both apps. No external libraries.
 - `supabase/functions/lw-admin/index.ts` — server function for creating the first admin and managing teacher and parent logins.
 - `parents/` — the Parents app (`index.html`, `app.js`, `style.css`, `manifest.webmanifest`, `sw.js`, `icons/`). It reuses `config.js`, the bundled Supabase client and the logo from the dashboard folder.

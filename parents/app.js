@@ -1,5 +1,5 @@
 /*!
- * Little Wings Parents (v1.1.0) — attendance, notices and fee receipts for parents.
+ * Little Wings Parents (v1.2.0) — attendance, notices and fee receipts for parents.
  * Plain static app, no build step. Talks to the school's Supabase project with
  * the PUBLIC publishable key only; what a parent can see is decided by the
  * database (RLS + parent-only RPCs). Child data is cached in this browser for
@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.2.0';
   var TZ = 'Asia/Kolkata';
   var DOMAIN = 'parents.littlewings.app';
   var OFFICE = '+91 79955 54105', OFFICE_TEL = 'tel:+917995554105';
@@ -64,11 +64,24 @@
   var tab = 'home', online = navigator.onLine !== false, loading = false, deferredInstall = null, channel = null, pollT = null, lastRefresh = 0;
 
   function cacheKey() { return CACHE + S.uid; }
-  function saveCache() { if (S) lsSet(cacheKey(), { v: 1, name: S.name, phone: S.phone, children: S.children, cur: S.cur, att: S.att, fees: S.fees, notices: S.notices, savedAt: S.savedAt }); }
+  function saveCache() {
+    if (!S) return;
+    var kids = (S.children || []).map(function (k) { return { id: k.id, name: k.name, classId: k.classId, section: k.section || '', status: k.status || 'Active', photoPath: k.photoPath || '' }; });
+    lsSet(cacheKey(), { v: 2, name: S.name, phone: S.phone, children: kids, cur: S.cur, att: S.att, fees: S.fees, notices: S.notices, savedAt: S.savedAt });
+  }
   function clearAllLocal() {
     try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('lwp_') === 0) localStorage.removeItem(k); }); } catch (e) { /* ignore */ }
   }
   function child() { if (!S) return null; for (var i = 0; i < S.children.length; i++) if (S.children[i].id === S.cur) return S.children[i]; return S.children[0] || null; }
+  function loadChildPhotos() {
+    if (!S || !SB) return Promise.resolve();
+    return Promise.all(S.children.map(function (k) {
+      if (!k.photoPath || !/^[A-Za-z0-9_-]{1,64}\/photo\.jpg$/.test(k.photoPath)) { k.photoUrl = ''; return Promise.resolve(); }
+      return SB.storage.from('student-photos').createSignedUrl(k.photoPath, 3600).then(function (r) {
+        k.photoUrl = (r && r.data && r.data.signedUrl) || '';
+      }).catch(function () { k.photoUrl = ''; });
+    }));
+  }
   function attFor(sid, ym) { return (S.att[sid] && S.att[sid][ym]) || null; }
 
   /* ---------- auth screens ---------- */
@@ -128,7 +141,7 @@
     var email = user.email || '';
     S = { uid: user.id, name: '', phone: email.split('@')[1] === DOMAIN ? email.split('@')[0] : '', children: [], cur: '', month: thisMonth(), att: {}, fees: {}, notices: [], savedAt: null, error: '' };
     var c = lsGet(cacheKey());
-    if (c && c.v === 1) {
+    if (c && (c.v === 1 || c.v === 2)) {
       S.name = c.name || ''; S.children = Array.isArray(c.children) ? c.children : []; S.cur = c.cur || '';
       S.att = c.att && typeof c.att === 'object' ? c.att : {}; S.fees = c.fees && typeof c.fees === 'object' ? c.fees : {}; S.notices = Array.isArray(c.notices) ? c.notices : []; S.savedAt = c.savedAt || null;
     }
@@ -184,8 +197,11 @@
       return SB.rpc('parent_children');
     }).then(function (r) {
       if (r.error) throw r.error;
-      S.children = (r.data || []).map(function (k) { return { id: k.id, name: k.name, classId: k.class_id }; });
+      S.children = (r.data || []).map(function (k) {
+        return { id: k.id, name: k.name, classId: k.class_id, section: k.section || '', status: k.status || 'Active', photoPath: k.photo_path || '', photoUrl: '' };
+      });
       if (!S.children.some(function (k) { return k.id === S.cur; })) S.cur = S.children[0] ? S.children[0].id : '';
+      return loadChildPhotos();
     }) : Promise.resolve();
     return p.then(function () {
       var jobs = [loadNotices()];
@@ -228,8 +244,9 @@
   function newCount() { var t = seenAt(); return S.notices.filter(function (n) { return !t || n.created_at > t; }).length; }
   function header() {
     var k = child();
-    var sub = k ? (CLASSES[k.classId] ? CLASSES[k.classId].emoji + ' ' : '') + className(k.classId) + ' · The Little Wings' : 'The Little Wings Play School';
-    var html = '<header class="top"><div class="top-row"><img src="../assets/logo.jpeg" alt="" width="42" height="42"><div class="top-title"><b>' + esc(k ? k.name : 'Little Wings Parents') + '</b><small>' + esc(sub) + '</small></div>' +
+    var sub = k ? (CLASSES[k.classId] ? CLASSES[k.classId].emoji + ' ' : '') + className(k.classId) + (k.section ? ' · Sec ' + k.section : '') + (k.status === 'Inactive' ? ' · Inactive' : '') + ' · The Little Wings' : 'The Little Wings Play School';
+    var face = (k && k.photoUrl) ? '<img class="kid-photo" src="' + esc(k.photoUrl) + '" alt="" width="42" height="42">' : '<img src="../assets/logo.jpeg" alt="" width="42" height="42">';
+    var html = '<header class="top"><div class="top-row">' + face + '<div class="top-title"><b>' + esc(k ? k.name : 'Little Wings Parents') + '</b><small>' + esc(sub) + '</small></div>' +
       '<button class="icon-btn" data-act="refresh" aria-label="Refresh" title="Refresh">' + (loading ? '⏳' : '🔄') + '</button><button class="icon-btn" data-act="account" aria-label="My account" title="My account">👤</button></div>';
     if (S.children.length > 1) html += '<div class="kid-switch" role="tablist" aria-label="Choose child">' + S.children.map(function (c) { return '<button class="kid-chip' + (c.id === S.cur ? ' active' : '') + '" data-act="kid" data-id="' + esc(c.id) + '" role="tab" aria-selected="' + (c.id === S.cur) + '">' + esc(c.name) + '</button>'; }).join('') + '</div>';
     html += '</header>';
@@ -385,7 +402,7 @@
 
   /* ---------- account sheet ---------- */
   function openSheet() {
-    var kids = S.children.map(function (k) { return esc(k.name) + ' (' + esc(className(k.classId)) + ')'; }).join(', ');
+    var kids = S.children.map(function (k) { return esc(k.name) + ' (' + esc(className(k.classId) + (k.section ? ' · Sec ' + k.section : '') + (k.status === 'Inactive' ? ', Inactive' : '')) + ')'; }).join(', ');
     $('#sheet-root').innerHTML = '<div class="sheet-bg" data-act="sheet-bg"><div class="sheet" id="acct-sheet" role="dialog" aria-modal="true" aria-label="My account"><div class="sheet-head"><h2>👤 My account</h2><button class="icon-btn" data-act="sheet-close" aria-label="Close">✕</button></div>' +
       '<p><b>' + esc(S.name || 'Parent') + '</b><br><span class="muted">📱 ' + esc(fmtMobile(S.phone)) + (kids ? '<br>🧒 ' + kids : '') + '</span></p>' +
       '<details><summary class="link">🔐 Change my password</summary><form id="pw-form" novalidate style="margin-top:.7rem">' +

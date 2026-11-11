@@ -1,5 +1,5 @@
 /*!
- * The Little Wings — shared fee receipt (v2.3). Used by the admin dashboard
+ * The Little Wings — shared fee receipt (v2.4). Used by the admin dashboard
  * and the Parents app. No dependencies, no network: HTML receipt + print to
  * one clean page (Save as PDF from the print dialog) + a PNG image drawn on a
  * canvas + a WhatsApp text summary.
@@ -71,6 +71,7 @@
       row('Class', esc(r.className || '—')) +
       row('Parent / Guardian', esc(r.parentName || '—')) +
       row('Fee for', esc(period(r.months))) +
+      (Number(r.yearlyFee) > 0 ? row('Yearly fee', esc(inr(r.yearlyFee))) : '') +
       (Number(r.monthlyFee) > 0 ? row('Monthly fee', esc(inr(r.monthlyFee))) : '') +
       (r.ref ? row('Reference', esc(r.ref)) : '') +
       '</tbody></table>' +
@@ -135,6 +136,7 @@
       ctx.font = 'bold 26px ' + F;
       var words = wrap(ctx, amountWords(r.amount), W - P * 2 - 340);
       var rows = [['Student name', r.studentName || '—', true], ['Class', r.className || '—'], ['Parent / Guardian', r.parentName || '—'], ['Fee for', period(r.months)]];
+      if (Number(r.yearlyFee) > 0) rows.push(['Yearly fee', inr(r.yearlyFee)]);
       if (Number(r.monthlyFee) > 0) rows.push(['Monthly fee', inr(r.monthlyFee)]);
       if (r.ref) rows.push(['Reference', r.ref]);
       var bal = balanceText(r);
