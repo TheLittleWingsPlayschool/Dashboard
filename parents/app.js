@@ -1,5 +1,5 @@
 /*!
- * Little Wings Parents (v1.2.0) — attendance, notices and fee receipts for parents.
+ * Little Wings Parents (v1.3.0) — attendance, notices, holidays and fee receipts for parents.
  * Plain static app, no build step. Talks to the school's Supabase project with
  * the PUBLIC publishable key only; what a parent can see is decided by the
  * database (RLS + parent-only RPCs). Child data is cached in this browser for
@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.2.0';
+  var VERSION = '1.3.0';
   var TZ = 'Asia/Kolkata';
   var DOMAIN = 'parents.littlewings.app';
   var OFFICE = '+91 79955 54105', OFFICE_TEL = 'tel:+917995554105';
@@ -67,7 +67,7 @@
   function saveCache() {
     if (!S) return;
     var kids = (S.children || []).map(function (k) { return { id: k.id, name: k.name, classId: k.classId, section: k.section || '', status: k.status || 'Active', photoPath: k.photoPath || '' }; });
-    lsSet(cacheKey(), { v: 2, name: S.name, phone: S.phone, children: kids, cur: S.cur, att: S.att, fees: S.fees, notices: S.notices, savedAt: S.savedAt });
+    lsSet(cacheKey(), { v: 2, name: S.name, phone: S.phone, children: kids, cur: S.cur, att: S.att, fees: S.fees, notices: S.notices, holidays: S.holidays || [], savedAt: S.savedAt });
   }
   function clearAllLocal() {
     try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('lwp_') === 0) localStorage.removeItem(k); }); } catch (e) { /* ignore */ }
@@ -139,11 +139,11 @@
   /* ---------- session ---------- */
   function start(user) {
     var email = user.email || '';
-    S = { uid: user.id, name: '', phone: email.split('@')[1] === DOMAIN ? email.split('@')[0] : '', children: [], cur: '', month: thisMonth(), att: {}, fees: {}, notices: [], savedAt: null, error: '' };
+    S = { uid: user.id, name: '', phone: email.split('@')[1] === DOMAIN ? email.split('@')[0] : '', children: [], cur: '', month: thisMonth(), att: {}, fees: {}, notices: [], holidays: [], savedAt: null, error: '' };
     var c = lsGet(cacheKey());
     if (c && (c.v === 1 || c.v === 2)) {
       S.name = c.name || ''; S.children = Array.isArray(c.children) ? c.children : []; S.cur = c.cur || '';
-      S.att = c.att && typeof c.att === 'object' ? c.att : {}; S.fees = c.fees && typeof c.fees === 'object' ? c.fees : {}; S.notices = Array.isArray(c.notices) ? c.notices : []; S.savedAt = c.savedAt || null;
+      S.att = c.att && typeof c.att === 'object' ? c.att : {}; S.fees = c.fees && typeof c.fees === 'object' ? c.fees : {}; S.notices = Array.isArray(c.notices) ? c.notices : []; S.holidays = Array.isArray(c.holidays) ? c.holidays : []; S.savedAt = c.savedAt || null;
     }
     if (S.children.length) render(); else showLoading('Loading your child’s details…');
     startLive();
@@ -177,6 +177,26 @@
       S.fees[sid] = { enabled: true, sum: sum, pays: r[1].data || [], at: new Date().toISOString() };
     });
   }
+  // Holidays & events (read-only) via the parent_holidays RPC.
+  function loadHolidays() {
+    return SB.rpc('parent_holidays').then(function (r) {
+      if (r.error) throw r.error;
+      S.holidays = (r.data || []).map(function (h) { return { id: h.id, from: String(h.date_from || '').slice(0, 10), to: String(h.date_to || h.date_from || '').slice(0, 10), title: h.title || 'Holiday', kind: h.kind === 'Event' ? 'Event' : 'Holiday' }; });
+    }).catch(function (e) { if (isNetErr(e)) throw e; });
+  }
+  function holidayOn(iso) { var l = (S && S.holidays) || []; for (var i = 0; i < l.length; i++) if (l[i].kind === 'Holiday' && iso >= l[i].from && iso <= l[i].to) return l[i]; return null; }
+  function holRange(h) {
+    var f = function (iso) { var d = new Date(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)); return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }); };
+    return h.to && h.to !== h.from ? f(h.from) + ' – ' + f(h.to) : f(h.from);
+  }
+  function holidaysHTML(limit) {
+    var today = todayISO(), l = ((S && S.holidays) || []).filter(function (h) { return h.to >= today; });
+    if (limit) l = l.slice(0, limit);
+    if (!l.length) return '<p class="muted">No upcoming holidays or events.</p>';
+    return '<ul class="hol-list">' + l.map(function (h) {
+      return '<li class="' + (h.kind === 'Event' ? 'ev' : 'off') + '"><span class="hi">' + (h.kind === 'Event' ? '📌' : '🎉') + '</span><span><b>' + esc(h.title) + '</b><small>' + esc(holRange(h)) + ' · ' + (h.kind === 'Event' ? 'Event (school open)' : 'Holiday') + '</small></span></li>';
+    }).join('') + '</ul>';
+  }
   function loadNotices() {
     return SB.from('notices').select('id,title,body,audience,pinned,expires_on,author_name,author_role,created_at')
       .order('pinned', { ascending: false }).order('created_at', { ascending: false }).limit(100).then(function (r) {
@@ -204,7 +224,7 @@
       return loadChildPhotos();
     }) : Promise.resolve();
     return p.then(function () {
-      var jobs = [loadNotices()];
+      var jobs = [loadNotices(), loadHolidays()];
       var k = child();
       if (k) {
         jobs.push(rpcAttendance(k.id, thisMonth()));
@@ -275,9 +295,9 @@
   function viewHome() {
     var k = child(), today = todayISO(), ym = thisMonth();
     if (!k) return noChild();
-    var m = attFor(k.id, ym), st = m ? m[today] : null, sun = weekday(today) === 0;
+    var m = attFor(k.id, ym), st = m ? m[today] : null, hol = holidayOn(today), sun = weekday(today) === 0 || !!hol;
     var tcls = st ? ST[st].cls : sun ? 'hol' : '', icon = st ? ST[st].emoji : sun ? '🎈' : '🕘';
-    var ttxt = st ? (st === 'P' ? 'Present today' : st === 'A' ? 'Absent today' : st === 'L' ? 'On leave today' : 'Half-day today') : sun ? 'Sunday — holiday' : (m ? 'Not marked yet' : 'Not loaded yet');
+    var ttxt = st ? (st === 'P' ? 'Present today' : st === 'A' ? 'Absent today' : st === 'L' ? 'On leave today' : 'Half-day today') : hol ? hol.title + ' — holiday' : sun ? 'Sunday — holiday' : (m ? 'Not marked yet' : 'Not loaded yet');
     var first = (S.name || '').split(' ')[0];
     var html = '<p class="greet"><span class="telugu">నమస్తే</span> ' + (first ? esc(first) + ' garu' : '') + ' 🙏</p>' +
       '<section class="card"><h2>Today · ' + esc(niceDate(today)) + '</h2><div class="today ' + tcls + '"><div class="big" aria-hidden="true">' + icon + '</div><div><b>' + esc(ttxt) + '</b><small>' + esc(k.name) + (st || sun ? '' : ' · the teacher usually marks attendance in the morning') + '</small></div></div></section>' +
@@ -285,6 +305,7 @@
     var list = S.notices.slice(0, 3), t = seenAt();
     html += '<section class="card"><div class="row between"><h2>📢 Latest notices</h2>' + (S.notices.length ? '<button class="btn small ghost" data-act="tab" data-tab="notices">See all</button>' : '') + '</div>' +
       (list.length ? list.map(function (n) { return noticeHTML(n, !t || n.created_at > t); }).join('') : '<p class="muted">No notices right now.</p>') + '</section>';
+    html += '<section class="card"><div class="row between"><h2>🗓️ Holidays &amp; events</h2>' + ((S.holidays || []).length ? '<button class="btn small ghost" data-act="tab" data-tab="notices">See all</button>' : '') + '</div>' + holidaysHTML(3) + '</section>';
     if (!isStandalone()) html += '<section class="card">' + installHint().replace('class="install-hint"', 'class="install-hint" style="margin:0"') + '</section>';
     return html;
   }
@@ -296,9 +317,9 @@
     var cells = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(function (d) { return '<div class="wd">' + d + '</div>'; }).join('');
     for (var i = 0; i < lead; i++) cells += '<div class="d blank"></div>';
     for (var d = 1; d <= n; d++) {
-      var iso = ym + '-' + String(d).padStart(2, '0'), s = m && m[iso], sun = weekday(iso) === 0;
-      var cls = s ? ST[s].cls : iso > today ? 'fut' : sun ? 'hol' : '';
-      var lbl = s ? ST[s].label : iso > today ? 'Upcoming' : sun ? 'Holiday' : 'Not marked';
+      var iso = ym + '-' + String(d).padStart(2, '0'), s = m && m[iso], hd = holidayOn(iso), sun = weekday(iso) === 0 || !!hd;
+      var cls = s ? ST[s].cls : sun ? 'hol' : iso > today ? 'fut' : '';
+      var lbl = s ? ST[s].label : hd ? hd.title : sun ? 'Holiday' : iso > today ? 'Upcoming' : 'Not marked';
       cells += '<div class="d ' + cls + (iso === today ? ' today' : '') + '" title="' + esc(niceDate(iso) + ': ' + lbl) + '" aria-label="' + esc(d + ' ' + lbl) + '">' + d + (s ? '<i>' + ST[s].short + '</i>' : '') + '</div>';
     }
     var min = addMonths(thisMonth(), -23);
@@ -310,7 +331,8 @@
   function viewNotices() {
     var t = seenAt();
     var html = '<section class="card"><div class="row between"><h2>📢 Notices</h2><button class="btn small ghost" data-act="refresh">🔄 Refresh</button></div>' +
-      (S.notices.length ? S.notices.map(function (n) { return noticeHTML(n, !t || n.created_at > t); }).join('') : '<div class="empty"><div class="e">📭</div><p>No notices right now. School and class notices will appear here.</p></div>') + '</section>';
+      (S.notices.length ? S.notices.map(function (n) { return noticeHTML(n, !t || n.created_at > t); }).join('') : '<div class="empty"><div class="e">📭</div><p>No notices right now. School and class notices will appear here.</p></div>') + '</section>' +
+      '<section class="card"><h2>🗓️ Holidays &amp; events</h2>' + holidaysHTML(0) + '<p class="muted small">Sundays are always holidays.</p></section>';
     if (S.notices.length && S.notices.some(function (n) { return !t || n.created_at > t; })) {
       var newest = S.notices.reduce(function (a, n) { return n.created_at > a ? n.created_at : a; }, '');
       setTimeout(function () { if (S && tab === 'notices') { lsSet(SEEN + S.uid, newest); updateNavDot(); } }, 1500);
@@ -339,7 +361,9 @@
         '<div class="kv-grid"><div><small>Monthly fee</small><b>' + esc(inr(fee)) + '</b></div>' +
         '<div><small>' + esc(feeMonthName(m.as_of_month) || monthName(ym)) + '</small><b class="' + (nowDue > 0 ? 'coral-t' : 'green-t') + '">' + (nowDue > 0 ? esc(inr(nowDue)) + ' due' : 'Paid ✓') + '</b></div>' +
         '<div><small>Months paid</small><b>' + (Number(m.months_paid) || 0) + ' of ' + (Number(m.months_billed) || 0) + '</b></div>' +
-        '<div><small>Total paid</small><b>' + esc(inr(m.total_paid)) + '</b></div></div>' +
+        '<div><small>Total paid</small><b>' + esc(inr(m.total_paid)) + '</b></div>' +
+        (Number(m.discount) > 0 ? '<div><small>Sibling discount</small><b class="green-t">−' + esc(inr(m.discount)) + ' / month</b></div>' : '') +
+        (Number(m.late_fee) > 0 ? '<div><small>Late fee included</small><b class="coral-t">' + esc(inr(m.late_fee)) + '</b></div>' : '') + '</div>' +
         (m.fees_from ? '<p class="muted small">Counted from ' + esc(feeMonthName(m.fees_from)) + ' to ' + esc(feeMonthName(m.as_of_month)) + '.</p>' : '');
     } else {
       html += '<p class="muted">The monthly fee is not set yet. Please contact the school office.</p>';

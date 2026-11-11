@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.4, cloud) + Parents app (v1.2)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.5, cloud) + Parents app (v1.3)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -126,8 +126,7 @@ Nothing is required for normal use. Only the **"Forgot password?" email link** n
 "Confirm email" does **not** need to be changed: accounts made by the app are created already confirmed.
 
 ## Backup
-Data is safe online, but still take **Settings → Download backup (JSON)** every month and keep it in Google Drive/email.
-**Restore from backup** adds the file's records to the database (same IDs are updated; nothing is deleted).
+Data is safe online, but still take a backup every month: **More → Backup → Download backup (Excel)** and keep the file in Google Drive or email. The Excel file has one sheet each for students, enquiries, payments, attendance, notices, expenses, salaries, staff, staff attendance and holidays. **Full backup (JSON)** is the complete copy that **Restore from backup** can read back (it adds the file's records; same IDs are updated; nothing is deleted). The page shows the last backup date, and the dashboard shows a reminder when it is more than 30 days old.
 CSV exports open in Excel/Google Sheets.
 
 ## Install as an app
@@ -148,6 +147,32 @@ The admission / student form now has mother, father and guardian names and mobil
 
 Student photos are uploaded to a **private** Supabase Storage bucket, resized on the phone first (about 600 px JPEG). The bucket is never public: the app uses short-lived signed URLs. Teachers can see photos of their own class only; parents see only their own child's photo, plus section and status, in the Parents app. Enquiries stay hidden from teachers and parents (the database returns nothing).
 
+## New in v2.5 (Batch 1)
+On a phone the bottom bar has **Dashboard, Classes, Attendance, Fees, Enquiries** and **More**. More opens Pending fees, Reports, Expenses, Staff, Holidays, Notices, Backup and Settings.
+
+- **Pending fees** (admin): every student with dues, with this month and earlier months shown separately. Use **Remind** to open WhatsApp with a ready message, or **Remind all** to step through parents one by one. The page shows when each parent was last reminded (IST). You can change the message in **Settings → WhatsApp messages**.
+- **Fee rules** (Settings, both **off** by default):
+  - **Late fee:** a flat amount, or an amount per day with an optional monthly cap. It applies after the due day (1–28) from a chosen month, until that month's fee is fully paid.
+  - **Sibling discount:** % or ₹ off the monthly fee for the 2nd and later child who shares a parent mobile with a child admitted earlier.
+  - Dues, receipts, the Pending page, reports and the Parents app all use the same rules (the database has the same calculation). Payments already saved are never changed.
+- **Birthdays:** a dashboard card for today and the next 7 days, with a WhatsApp **Wish** button. The greeting can be edited in Settings.
+- **Holidays & events:** Sundays are always holidays. Holidays you add are skipped on the Attendance page (with **Mark anyway**) and in working-day counts. Teachers can view the list, and parents see it in the Parents app (v1.3). Only the admin can change it.
+- **Expenses:** date, category, amount, mode and note, with monthly totals and a breakdown by category.
+- **Staff** (admin): three tabs.
+  - **Staff:** the staff list.
+  - **Salary:** record a payment with advance, deduction and bonus, then get a printable **salary slip** (Print / Save as PDF).
+  - **Attendance:** present, absent or half-day for each staff member.
+- **Reports** (admin):
+  - **Fees:** expected, collected and pending by class and by month.
+  - **Attendance:** % by class and by student.
+  - **Enquiries → admission:** by month and by feedback.
+  - **Profit:** fees received vs expenses vs salaries.
+  - Every report can be printed or saved as PDF, and all four export to one Excel file.
+- **Excel backup** (no internet library: `assets/xlsx-lite.js` writes the .xlsx in the browser) and a backup reminder. See *Backup*.
+- **Website enquiry form:** a public Edge Function, `lw-enquiry`. It only **adds** an enquiry (source *Website*, marked **NEW** in Enquiries and on the dashboard) and never reads data. It checks the website address, validates every field, has a hidden spam trap and a minimum fill time, and limits each device to 3 an hour (6 a day). The same mobile can only send once in 6 hours, and the whole form takes at most 60 a day. A ready-to-paste form for the school website is kept outside this repo (copy it into the website's `index.html`).
+
+Database: run `supabase/batch1.sql` after `enquiry_admission.sql`. It adds the `holidays`, `expenses`, `salaries`, `staff_attendance`, `fee_reminders` and `web_enquiry_hits` tables, all with RLS. Teachers can only read holidays, and parents get holidays through the `parent_holidays()` RPC only. The file also adds the fee-rule functions and the new `parent_fees()` columns `late_fee` and `discount`.
+
 ## Files
 - `index.html`, `style.css`, `app.js` — the app. `Store` at the top of `app.js` is the only data layer (offline copy + sync).
 - `config.js` — Supabase project URL and the **publishable** key (public by design; access is controlled by login + RLS).
@@ -158,6 +183,9 @@ Student photos are uploaded to a **private** Supabase Storage bucket, resized on
 - `supabase/receipts.sql` — v2.3: `parent_fees` / `parent_payments` RPCs for the Parents app Fees tab (run after `parents.sql`).
 - `supabase/enquiry_admission.sql` — v2.4: yearly fee column, private `student-photos` bucket and RLS, expanded `parent_children()` (section, status, photo path), and `parent_fees()` dues that treat Inactive like Left and use yearly÷12 when no nursery monthly fee is set (run after `receipts.sql`).
 - `assets/receipt.js`, `assets/receipt.css` — the shared fee receipt (HTML, print to one A4 page, PNG image, WhatsApp text, amount in words), used by both apps. No external libraries.
+- `supabase/batch1.sql` — v2.5: holidays, expenses, salaries, staff attendance, fee reminders, website-enquiry rate-limit log (all RLS), `parent_holidays()`, fee rules (late fee, sibling discount) in `parent_fees()`.
+- `supabase/functions/lw-enquiry/index.ts` — v2.5 public website enquiry form endpoint (insert-only, validated, rate-limited).
+- `assets/xlsx-lite.js` — tiny Excel (.xlsx) writer for backups and reports.
 - `supabase/functions/lw-admin/index.ts` — server function for creating the first admin and managing teacher and parent logins.
 - `parents/` — the Parents app (`index.html`, `app.js`, `style.css`, `manifest.webmanifest`, `sw.js`, `icons/`). It reuses `config.js`, the bundled Supabase client and the logo from the dashboard folder.
 
@@ -165,7 +193,7 @@ Student photos are uploaded to a **private** Supabase Storage bucket, resized on
 - **Last write wins**: if two people edit the same record at the same moment, the later save wins. Attendance is stored per class per day, so different classes never clash.
 - Receipt numbers are checked against existing receipts, but two devices recording payments while both offline could still pick the same number; the Fees page then shows a warning with a one-tap fix (see *Fee receipts*).
 - *Save as PDF* uses the phone's print window (no PDF library is bundled). The receipt image is a PNG; there is no automatic attachment to WhatsApp messages — WhatsApp links carry the text summary, and the image can be shared from the share sheet.
-- Discounts/concessions are not a separate field yet: record the amount actually paid (and lower the student's monthly fee if the concession is permanent).
+- Apart from the optional sibling discount, one-off concessions are not a separate field: record the amount actually paid (and lower the student's fee if the concession is permanent).
 - The offline copy uses the phone's browser storage (about 5 MB), enough for several years of a small school. Signing out removes it from that phone, along with any changes not yet uploaded (the app warns first). The installed app’s shell (pages and icons) stays on the phone so you can still reach the sign-in screen.
 - Supabase's free plan pauses a project after about a week with no activity. Normal daily use keeps it awake. If it pauses, open the project in the Supabase dashboard and click **Restore**.
 - Password-reset emails need the URL setting above and are limited by Supabase's free email sender.

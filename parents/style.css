@@ -188,3 +188,10 @@ main.view { padding: .8rem .8rem calc(var(--nav-h) + 1.2rem + env(safe-area-inse
 
 /* v1.2: child photo in the header */
 .top-row img.kid-photo { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; background: #fff; flex: 0 0 auto; }
+/* v1.3: holidays & events */
+.hol-list { list-style: none; margin: 0; padding: 0; }
+.hol-list li { display: flex; gap: .7rem; align-items: center; padding: .55rem 0; border-bottom: 1px dashed #e8edf3; }
+.hol-list li:last-child { border-bottom: 0; }
+.hol-list .hi { width: 36px; height: 36px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: #fff7dc; flex: none; }
+.hol-list li.ev .hi { background: #e6f5fd; }
+.hol-list small { display: block; color: #6b7a8c; }

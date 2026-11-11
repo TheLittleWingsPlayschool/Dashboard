@@ -24,6 +24,9 @@
 -- v2.4: then run supabase/enquiry_admission.sql (yearly_fee, private student
 -- photos bucket + RLS, parent_children section/status/photo_path, parent_fees
 -- Inactive + yearly/12 dues).
+-- v2.5: then run supabase/batch1.sql (holidays, expenses, salaries,
+-- staff_attendance, fee_reminders, web_enquiry_hits, parent_holidays RPC,
+-- late fee / sibling discount rules inside parent_fees).
 -- =====================================================================
 
 create schema if not exists app;

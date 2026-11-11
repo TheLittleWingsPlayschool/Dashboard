@@ -1,5 +1,5 @@
 /*!
- * The Little Wings — shared fee receipt (v2.4). Used by the admin dashboard
+ * The Little Wings — shared fee receipt (v2.5). Used by the admin dashboard
  * and the Parents app. No dependencies, no network: HTML receipt + print to
  * one clean page (Save as PDF from the print dialog) + a PNG image drawn on a
  * canvas + a WhatsApp text summary.
@@ -73,6 +73,8 @@
       row('Fee for', esc(period(r.months))) +
       (Number(r.yearlyFee) > 0 ? row('Yearly fee', esc(inr(r.yearlyFee))) : '') +
       (Number(r.monthlyFee) > 0 ? row('Monthly fee', esc(inr(r.monthlyFee))) : '') +
+      (Number(r.discount) > 0 ? row('Sibling discount', esc(inr(r.discount)) + ' / month') : '') +
+      (Number(r.lateFee) > 0 ? row('Late fee included', esc(inr(r.lateFee))) : '') +
       (r.ref ? row('Reference', esc(r.ref)) : '') +
       '</tbody></table>' +
       '<div class="lwr-amount"><div class="lwr-amt"><small>Amount paid</small><b>' + esc(inr(r.amount)) + '</b></div><div class="lwr-words"><small>Amount in words</small><b>' + esc(amountWords(r.amount)) + '</b></div></div>' +
@@ -89,6 +91,8 @@
       'Student: ' + (r.studentName || '') + (r.className ? ' (' + r.className + ')' : '') + '\n' +
       'Fee for: ' + period(r.months) + '\n' +
       'Amount paid: ' + inr(r.amount) + '\n(' + amountWords(r.amount) + ')\n' +
+      (Number(r.lateFee) > 0 ? 'Late fee included: ' + inr(r.lateFee) + '\n' : '') +
+      (Number(r.discount) > 0 ? 'Sibling discount: ' + inr(r.discount) + ' / month\n' : '') +
       'Mode: ' + (r.mode || '') + (r.ref ? ' · Ref ' + r.ref : '') + '\n' +
       'Date: ' + fmtDate(r.date) + '\n' +
       (bal ? 'Balance due: ' + bal + '\n' : '') +
@@ -138,6 +142,8 @@
       var rows = [['Student name', r.studentName || '—', true], ['Class', r.className || '—'], ['Parent / Guardian', r.parentName || '—'], ['Fee for', period(r.months)]];
       if (Number(r.yearlyFee) > 0) rows.push(['Yearly fee', inr(r.yearlyFee)]);
       if (Number(r.monthlyFee) > 0) rows.push(['Monthly fee', inr(r.monthlyFee)]);
+      if (Number(r.discount) > 0) rows.push(['Sibling discount', inr(r.discount) + ' / month']);
+      if (Number(r.lateFee) > 0) rows.push(['Late fee included', inr(r.lateFee)]);
       if (r.ref) rows.push(['Reference', r.ref]);
       var bal = balanceText(r);
       var H = 24 + 150 + addr.length * 24 + 110 + rows.length * 48 + 40 + Math.max(110, 50 + words.length * 34) + (bal ? 60 : 0) + 170 + 60;
