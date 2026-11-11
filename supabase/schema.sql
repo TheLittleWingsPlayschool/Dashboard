@@ -27,6 +27,10 @@
 -- v2.5: then run supabase/batch1.sql (holidays, expenses, salaries,
 -- staff_attendance, fee_reminders, web_enquiry_hits, parent_holidays RPC,
 -- late fee / sibling discount rules inside parent_fees).
+-- v2.6: then run supabase/batch2.sql (homework/updates, timetables, exams &
+--   marks, vans + van fee, fee history, documents, promotions, feedback,
+--   albums, audit log, push subscriptions; private buckets class-media,
+--   student-docs, gallery; parent RPCs). See the header of that file.
 -- =====================================================================
 
 create schema if not exists app;

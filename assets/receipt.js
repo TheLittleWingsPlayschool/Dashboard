@@ -74,6 +74,7 @@
       (Number(r.yearlyFee) > 0 ? row('Yearly fee', esc(inr(r.yearlyFee))) : '') +
       (Number(r.monthlyFee) > 0 ? row('Monthly fee', esc(inr(r.monthlyFee))) : '') +
       (Number(r.discount) > 0 ? row('Sibling discount', esc(inr(r.discount)) + ' / month') : '') +
+      (Number(r.vanFee) > 0 ? row('Van fee', esc(inr(r.vanFee)) + ' / month') : '') +
       (Number(r.lateFee) > 0 ? row('Late fee included', esc(inr(r.lateFee))) : '') +
       (r.ref ? row('Reference', esc(r.ref)) : '') +
       '</tbody></table>' +
@@ -91,6 +92,7 @@
       'Student: ' + (r.studentName || '') + (r.className ? ' (' + r.className + ')' : '') + '\n' +
       'Fee for: ' + period(r.months) + '\n' +
       'Amount paid: ' + inr(r.amount) + '\n(' + amountWords(r.amount) + ')\n' +
+      (Number(r.vanFee) > 0 ? 'Van fee: ' + inr(r.vanFee) + ' / month\n' : '') +
       (Number(r.lateFee) > 0 ? 'Late fee included: ' + inr(r.lateFee) + '\n' : '') +
       (Number(r.discount) > 0 ? 'Sibling discount: ' + inr(r.discount) + ' / month\n' : '') +
       'Mode: ' + (r.mode || '') + (r.ref ? ' · Ref ' + r.ref : '') + '\n' +
@@ -143,6 +145,7 @@
       if (Number(r.yearlyFee) > 0) rows.push(['Yearly fee', inr(r.yearlyFee)]);
       if (Number(r.monthlyFee) > 0) rows.push(['Monthly fee', inr(r.monthlyFee)]);
       if (Number(r.discount) > 0) rows.push(['Sibling discount', inr(r.discount) + ' / month']);
+      if (Number(r.vanFee) > 0) rows.push(['Van fee', inr(r.vanFee) + ' / month']);
       if (Number(r.lateFee) > 0) rows.push(['Late fee included', inr(r.lateFee)]);
       if (r.ref) rows.push(['Reference', r.ref]);
       var bal = balanceText(r);

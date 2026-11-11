@@ -7,7 +7,9 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.5.0';
+  var APP_VERSION = '2.6.0';
+  // Part B (language toggle + phone alerts) ships in v2.7.0; off in v2.6.0.
+  var PART_B = false;
   var PARENT_DOMAIN = 'parents.littlewings.app';
   var PARENTS_APP_URL = 'https://thelittlewingsplayschool.github.io/Dashboard/parents/';
   var TZ = 'Asia/Kolkata';
@@ -69,18 +71,28 @@
     var LEGACY = 'lw_', CACHE = 'lwc_';
     // v2.5: holidays (admin writes, teachers read) + admin-only expenses, salaries,
     // staff_attendance and fee_reminders. All "generic" tables are id + data rows.
-    var GENERIC = ['payments', 'enquiries', 'staff', 'holidays', 'expenses', 'salaries', 'staff_attendance', 'fee_reminders'];
-    var TABLES = ['settings', 'users', 'students', 'attendance'].concat(GENERIC);
-    var DB = ['settings', 'students', 'student_fees', 'attendance'].concat(GENERIC);
-    var ADMIN_ONLY = { student_fees: 1, payments: 1, enquiries: 1, staff: 1, expenses: 1, salaries: 1, staff_attendance: 1, fee_reminders: 1 };
-    var ADMIN_WRITE = { settings: 1, student_fees: 1, payments: 1, enquiries: 1, staff: 1, holidays: 1, expenses: 1, salaries: 1, staff_attendance: 1, fee_reminders: 1 };
+    // v2.6: vans, student_docs, promotions, feedback (admin only) + "classed"
+    // tables that carry a class_id column (teacher: own class; admin: all).
+    var GENERIC = ['payments', 'enquiries', 'staff', 'holidays', 'expenses', 'salaries', 'staff_attendance', 'fee_reminders', 'vans', 'student_docs', 'promotions', 'feedback'];
+    var CLASSED = ['class_posts', 'timetables', 'exams', 'marks', 'albums'];
+    var TABLES = ['settings', 'users', 'students', 'attendance'].concat(GENERIC, CLASSED);
+    var DB = ['settings', 'students', 'student_fees', 'attendance'].concat(GENERIC, CLASSED);
+    var ADMIN_ONLY = { student_fees: 1, payments: 1, enquiries: 1, staff: 1, expenses: 1, salaries: 1, staff_attendance: 1, fee_reminders: 1, vans: 1, student_docs: 1, promotions: 1, feedback: 1 };
+    var ADMIN_WRITE = { settings: 1, student_fees: 1, payments: 1, enquiries: 1, staff: 1, holidays: 1, expenses: 1, salaries: 1, staff_attendance: 1, fee_reminders: 1, vans: 1, student_docs: 1, promotions: 1, feedback: 1, albums: 1 };
     var PK = { settings: 'id', students: 'id', student_fees: 'student_id', attendance: 'day,class_id' };
     var COLS = {
       settings: 'id,data,deleted,updated_at', students: 'id,class_id,data,deleted,updated_at',
-      student_fees: 'student_id,monthly_fee,yearly_fee,deleted,updated_at', attendance: 'day,class_id,data,deleted,updated_at'
+      student_fees: 'student_id,monthly_fee,yearly_fee,van_fee,van_from,van_to,fee_hist,deleted,updated_at', attendance: 'day,class_id,data,deleted,updated_at'
     };
     GENERIC.forEach(function (t) { PK[t] = 'id'; COLS[t] = 'id,data,deleted,updated_at'; });
+    CLASSED.forEach(function (t) { PK[t] = 'id'; COLS[t] = 'id,class_id,data,deleted,updated_at'; });
     function isGeneric(t) { return GENERIC.indexOf(t) >= 0; }
+    function isClassed(t) { return CLASSED.indexOf(t) >= 0; }
+    function feeRow(r) {
+      var hist = asArray(r.fee_hist).filter(function (h) { return h && isMonth(h.until); }).map(function (h) { return { until: h.until, monthly: Number(h.monthly) || 0, yearly: Number(h.yearly) || 0, classId: CLASS_BY_ID[h.classId] ? h.classId : '' }; });
+      return { student_id: String(r.student_id), monthly_fee: Number(r.monthly_fee) || 0, yearly_fee: Number(r.yearly_fee) || 0, van_fee: Number(r.van_fee) || 0,
+        van_from: isMonth(r.van_from) ? r.van_from : null, van_to: isMonth(r.van_to) ? r.van_to : null, fee_hist: hist, deleted: !!r.deleted };
+    }
     var listeners = [], statusListeners = [];
     var U = null;            // { id, role }
     var st = emptyState();
@@ -99,7 +111,8 @@
     function keyOf(t, r) { return t === 'attendance' ? r.day + '|' + r.class_id : t === 'student_fees' ? String(r.student_id) : String(r.id); }
     function canon(t, r) {
       var d = !!r.deleted;
-      if (t === 'student_fees') return { student_id: String(r.student_id), monthly_fee: Number(r.monthly_fee) || 0, yearly_fee: Number(r.yearly_fee) || 0, deleted: d };
+      if (t === 'student_fees') return feeRow(r);
+      if (isClassed(t)) return { id: String(r.id), class_id: r.class_id || null, data: asObject(r.data), deleted: d };
       if (t === 'attendance') return { day: String(r.day).slice(0, 10), class_id: r.class_id, data: asObject(r.data), deleted: d };
       if (t === 'students') return { id: String(r.id), class_id: r.class_id, data: asObject(r.data), deleted: d };
       if (t === 'settings') return { id: 1, data: asObject(r.data), deleted: d };
@@ -126,7 +139,11 @@
         var fees = st.rows.student_fees;
         return live('students').map(function (r) {
           var o = clone(r.data); o.id = r.id; o.classId = r.class_id;
-          if (isAdminRole()) { var f = fees[r.id]; o.monthlyFee = f && !f.deleted ? f.monthly_fee : 0; o.yearlyFee = f && !f.deleted ? f.yearly_fee : 0; }
+          if (isAdminRole()) {
+            var f = fees[r.id], ok = f && !f.deleted;
+            o.monthlyFee = ok ? f.monthly_fee : 0; o.yearlyFee = ok ? f.yearly_fee : 0; o.vanFee = ok ? f.van_fee || 0 : 0;
+            o.vanFrom = ok && f.van_from ? f.van_from : ''; o.vanTo = ok && f.van_to ? f.van_to : ''; o.feeHist = ok ? clone(asArray(f.fee_hist)) : [];
+          }
           return o;
         });
       }
@@ -134,6 +151,7 @@
       if (name === 'users') return st.profiles.filter(function (p) { return p.role === 'teacher'; }).map(function (p) { return { id: p.id, name: p.name || p.email || 'Teacher', classId: p.class_id || '', email: p.email || '' }; });
       if (name === 'parents') return st.profiles.filter(function (p) { return p.role === 'parent'; }).map(function (p) { var e = p.email || ''; return { id: p.id, name: p.name || 'Parent', phone: e.split('@')[1] === PARENT_DOMAIN ? e.split('@')[0] : '', email: e }; });
       if (isGeneric(name)) return live(name).map(function (r) { var o = clone(r.data); o.id = r.id; return o; });
+      if (isClassed(name)) return live(name).map(function (r) { var o = clone(r.data); o.id = r.id; o.classId = r.class_id || ''; return o; });
       return undefined;
     }
     function load(name, fallback) { if (!U) return clone(fallback); var v = collection(name); return v === undefined ? clone(fallback) : v; }
@@ -145,18 +163,21 @@
         asArray(value).forEach(function (s) {
           if (!s || !s.id || !CLASS_BY_ID[s.classId]) return;
           var id = String(s.id);
-          out.students[id] = { id: id, class_id: s.classId, data: strip(s, ['id', 'classId', 'monthlyFee', 'yearlyFee']), deleted: false };
-          if (out.student_fees) out.student_fees[id] = { student_id: id, monthly_fee: num(s.monthlyFee), yearly_fee: num(s.yearlyFee), deleted: false };
+          out.students[id] = { id: id, class_id: s.classId, data: strip(s, ['id', 'classId', 'monthlyFee', 'yearlyFee', 'vanFee', 'vanFrom', 'vanTo', 'feeHist']), deleted: false };
+          if (out.student_fees) out.student_fees[id] = feeRow({ student_id: id, monthly_fee: num(s.monthlyFee), yearly_fee: num(s.yearlyFee), van_fee: num(s.vanFee), van_from: s.vanFrom, van_to: s.vanTo, fee_hist: s.feeHist });
         });
       } else if (name === 'attendance') {
         out.attendance = {};
         var cls = {}; live('students').forEach(function (r) { cls[r.id] = r.class_id; });
+        // v2.6: a day's mark stays in the class row it was saved in (so a
+        // year-end promotion never moves or drops old attendance).
+        var prev = {}; live('attendance').forEach(function (r) { Object.keys(asObject(r.data)).forEach(function (sid) { prev[r.day + '|' + sid] = r.class_id; }); });
         var val = asObject(value);
         Object.keys(val).forEach(function (day) {
           if (!isISODate(day)) return;
           var rec = asObject(val[day]);
           Object.keys(rec).forEach(function (sid) {
-            var c = cls[sid]; if (!c || !ATT[rec[sid]]) return;
+            var c = prev[day + '|' + sid] || cls[sid]; if (!c || !ATT[rec[sid]]) return;
             var k = day + '|' + c;
             (out.attendance[k] = out.attendance[k] || { day: day, class_id: c, data: {}, deleted: false }).data[sid] = rec[sid];
           });
@@ -164,6 +185,14 @@
       } else if (isGeneric(name)) {
         out[name] = {};
         asArray(value).forEach(function (r) { if (r && r.id) out[name][String(r.id)] = { id: String(r.id), data: strip(r, ['id']), deleted: false }; });
+      } else if (isClassed(name)) {
+        out[name] = {};
+        asArray(value).forEach(function (r) {
+          if (!r || !r.id) return;
+          var c = CLASS_BY_ID[r.classId] ? r.classId : null;
+          if (!c && name !== 'albums') return;
+          out[name][String(r.id)] = { id: String(r.id), class_id: c, data: strip(r, ['id', 'classId']), deleted: false };
+        });
       }
       return out;
     }
@@ -175,7 +204,7 @@
         if (!map[k] && !cur[k].deleted) {
           var tomb = clone(cur[k]); tomb.deleted = true;
           if ('data' in tomb) tomb.data = {};
-          if (t === 'student_fees') { tomb.monthly_fee = 0; tomb.yearly_fee = 0; }
+          if (t === 'student_fees') { tomb.monthly_fee = 0; tomb.yearly_fee = 0; tomb.van_fee = 0; tomb.van_from = null; tomb.van_to = null; tomb.fee_hist = []; }
           cur[k] = tomb; enqueue(t, k); n++;
         }
       });
@@ -194,7 +223,7 @@
     function cacheKey(id) { return CACHE + (id || (U && U.id)); }
     function saveCache() {
       if (!U) return;
-      try { localStorage.setItem(cacheKey(), JSON.stringify({ v: 2, rows: st.rows, profiles: st.profiles, profile: st.profile, queue: st.queue, since: st.since, lastSync: st.lastSync, firstSyncDone: st.firstSyncDone })); }
+      try { localStorage.setItem(cacheKey(), JSON.stringify({ v: 3, rows: st.rows, profiles: st.profiles, profile: st.profile, queue: st.queue, since: st.since, lastSync: st.lastSync, firstSyncDone: st.firstSyncDone })); }
       catch (e) { if (!cacheWarned) { cacheWarned = true; toast('This device’s offline copy is full. Online saving still works.', 'err'); } }
     }
     function init(userId) {
@@ -203,10 +232,12 @@
       st = emptyState();
       try {
         var c = JSON.parse(localStorage.getItem(cacheKey()) || 'null');
-        if (c && c.v === 2) {
+        if (c && (c.v === 2 || c.v === 3)) {
           DB.forEach(function (t) { st.rows[t] = asObject(c.rows && c.rows[t]); });
           st.profiles = asArray(c.profiles); st.profile = c.profile || null; st.queue = asObject(c.queue);
           st.since = asObject(c.since); st.lastSync = c.lastSync || null; st.firstSyncDone = !!c.firstSyncDone;
+          // v2 offline copies have no van/fee-history columns: re-read fees in full.
+          if (c.v === 2) { st.since.student_fees = null; Object.keys(st.rows.student_fees).forEach(function (k) { st.rows.student_fees[k] = feeRow(st.rows.student_fees[k]); }); }
         }
       } catch (e) { console.warn('Offline copy unreadable, starting fresh', e); }
       if (st.profile) U.role = st.profile.role;
@@ -354,7 +385,7 @@
     /* ---------- backup / legacy (v1) data ---------- */
     function exportAll() {
       var data = {};
-      ['settings', 'students', 'attendance'].concat(GENERIC).forEach(function (t) { if (readable(t)) data[t] = collection(t); });
+      ['settings', 'students', 'attendance'].concat(GENERIC, CLASSED).forEach(function (t) { if (readable(t)) data[t] = collection(t); });
       return { app: 'littlewings-dashboard', version: 2, appVersion: APP_VERSION, exportedAt: new Date().toISOString(), data: data };
     }
     function validateBackup(obj) {
@@ -362,7 +393,7 @@
         throw new Error('This file is not a Little Wings dashboard backup.');
       }
       var d = obj.data;
-      ['students'].concat(GENERIC).forEach(function (t) {
+      ['students'].concat(GENERIC, CLASSED).forEach(function (t) {
         if (d[t] != null && !Array.isArray(d[t])) throw new Error('Backup is damaged (' + t + ').');
       });
       if (d.attendance != null && (typeof d.attendance !== 'object' || Array.isArray(d.attendance))) throw new Error('Backup is damaged (attendance).');
@@ -395,7 +426,7 @@
       init: init, setProfile: setProfile, profile: function () { return st.profile; }, reset: reset, clearCache: clearCache,
       start: start, stop: stop, sync: sync, flush: flush, pendingCount: pendingCount, status: function () { return status; },
       firstSyncDone: function () { return st.firstSyncDone; }, hasSettingsRow: hasSettingsRow,
-      setNoAccessHandler: function (fn) { onNoAccess = fn; }, TABLES: TABLES
+      setNoAccessHandler: function (fn) { onNoAccess = fn; }, TABLES: TABLES, readable: readable
     };
   })();
 
@@ -418,6 +449,7 @@
     S.salaries = asArray(Store.load('salaries', []));
     S.staff_attendance = asArray(Store.load('staff_attendance', []));
     S.fee_reminders = asArray(Store.load('fee_reminders', []));
+    ['vans', 'student_docs', 'promotions', 'feedback', 'class_posts', 'timetables', 'exams', 'marks', 'albums'].forEach(function (k) { S[k] = asArray(Store.load(k, [])); });
   }
   function persist() {
     for (var i = 0; i < arguments.length; i++) Store.save(arguments[i], S[arguments[i]]);
@@ -639,13 +671,34 @@
     }
     return null;
   }
-  function siblingDiscount(s) {
-    var r = feeRules(), base = effectiveMonthly(s);
+  function siblingDiscount(s, base) {
+    var r = feeRules();
+    if (base == null) base = effectiveMonthly(s);
     if (!s || !r.sibOn || r.sibVal <= 0 || base <= 0 || !olderSibling(s)) return 0;
     var net = r.sibType === 'flat' ? Math.max(0, round2(base - r.sibVal)) : Math.max(0, round2(base - base * Math.min(r.sibVal, 100) / 100));
     return round2(base - net);
   }
   function netMonthly(s) { return s ? round2(effectiveMonthly(s) - siblingDiscount(s)) : 0; }
+  /* v2.6 (mirrors supabase/batch2.sql app.fee_base_month / fee_net_month /
+   * fee_van_month): after a year-end promotion, feeHist keeps the old fee for
+   * the months up to "until", so earlier months are never re-priced. The van
+   * fee is a separate line, charged only in months that also have tuition. */
+  function histFor(s, ym) {
+    var best = null;
+    asArray(s && s.feeHist).forEach(function (h) { if (h && isMonth(h.until) && ym <= h.until && (!best || h.until < best.until)) best = h; });
+    return best;
+  }
+  function baseMonth(s, ym) {
+    var h = isMonth(ym) ? histFor(s, ym) : null;
+    if (!h) return effectiveMonthly(s);
+    return effectiveMonthly({ classId: CLASS_BY_ID[h.classId] ? h.classId : s.classId, monthlyFee: h.monthly, yearlyFee: h.yearly });
+  }
+  function netMonth(s, ym) { if (!s) return 0; var b = baseMonth(s, ym); return b > 0 ? round2(b - siblingDiscount(s, b)) : 0; }
+  function vanMonth(s, ym) {
+    var v = num(s && s.vanFee);
+    if (!(v > 0) || (isMonth(s.vanFrom) && ym < s.vanFrom) || (isMonth(s.vanTo) && ym > s.vanTo)) return 0;
+    return round2(v);
+  }
   function cmpPaid(a, b) {
     var x = isISODate(a.paidOn) ? a.paidOn : '~', y = isISODate(b.paidOn) ? b.paidOn : '~';
     if (x !== y) return x < y ? -1 : 1;
@@ -671,8 +724,10 @@
     if (r.lateType === 'day' && r.lateMax > 0) f = Math.min(f, r.lateMax);
     return round2(f);
   }
-  function feeApplies(s, ym) { return !isInactive(s) && ym >= feeStart(s) && netMonthly(s) > 0; }
-  function chargeFor(s, ym) { var n = netMonthly(s); return feeApplies(s, ym) ? round2(n + lateFine(s, ym, n)) : 0; }
+  function feeApplies(s, ym) { return !isInactive(s) && ym >= feeStart(s) && netMonth(s, ym) > 0; }
+  function monthBill(s, ym) { var n = netMonth(s, ym), v = n > 0 ? vanMonth(s, ym) : 0; return round2(n + v); }
+  function chargeFor(s, ym) { if (!feeApplies(s, ym)) return 0; var b = monthBill(s, ym); return round2(b + lateFine(s, ym, b)); }
+  function fineFor(s, ym) { return feeApplies(s, ym) ? lateFine(s, ym, monthBill(s, ym)) : 0; }
   function dueFor(s, ym) { return feeApplies(s, ym) ? Math.max(0, round2(chargeFor(s, ym) - paidFor(s.id, ym))) : 0; }
   function outstanding(s) {
     var start = feeStart(s);
@@ -682,7 +737,7 @@
   }
 
   // expose for tests
-  window.__lw = { inWords: inWords, outstanding: function (id) { var s = studentById(id); return s ? outstanding(s) : null; }, paidFor: paidFor, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION, effectiveMonthly: effectiveMonthly, isInactive: isInactive, netMonthly: function (id) { return netMonthly(studentById(id)); }, lateFine: function (id, ym) { var s = studentById(id); return s ? lateFine(s, ym) : null; }, dueFor: function (id, ym) { var s = studentById(id); return s ? dueFor(s, ym) : null; } };
+  window.__lw = { inWords: inWords, outstanding: function (id) { var s = studentById(id); return s ? outstanding(s) : null; }, paidFor: paidFor, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION, effectiveMonthly: effectiveMonthly, isInactive: isInactive, netMonthly: function (id) { return netMonthly(studentById(id)); }, lateFine: function (id, ym) { var s = studentById(id); return s ? fineFor(s, ym) : null; }, chargeFor: function (id, ym) { var s = studentById(id); return s ? chargeFor(s, ym) : null; }, netMonth: function (id, ym) { var s = studentById(id); return s ? netMonth(s, ym) : null; }, vanMonth: function (id, ym) { var s = studentById(id); return s ? vanMonth(s, ym) : null; }, dueFor: function (id, ym) { var s = studentById(id); return s ? dueFor(s, ym) : null; } };
 
   /* =====================================================================
    * UI PRIMITIVES
@@ -1085,6 +1140,8 @@
     p.catch(function () {}).then(function () { showLogin({ skipStatus: true, message: 'This is a parent login. Parents use the Little Wings Parents app: ' + PARENTS_APP_URL }); });
   }
   function startSession(user) {
+    var ml = user && user.user_metadata && user.user_metadata.lw_lang;
+    if (PART_B && !langSaved() && ml && ml !== LANG && (ml === 'en' || I18N[ml])) { LANG = ml; try { localStorage.setItem('lw-lang', ml); } catch (e) { /* ignore */ } }
     Store.init(user.id);
     var cached = Store.profile();
     if (cached && cached.role === 'parent') { cached = null; }
@@ -1135,7 +1192,8 @@
   var ROUTE_ORDER = ['dashboard', 'classes', 'attendance', 'notices', 'fees', 'pending', 'enquiries', 'reports', 'expenses', 'staff', 'holidays', 'backup', 'settings'];
   // Phone bottom bar: admin gets 5 main pages + "More"; teachers see all of theirs.
   var BOTTOM_ADMIN = ['dashboard', 'classes', 'attendance', 'fees', 'enquiries', 'more'];
-  function routeTitle(key) { var r = ROUTES[key]; return (ME && ME.role === 'teacher' && r.tTitle) ? r.tTitle : r.title; }
+  function routeTitle(key) { var r = ROUTES[key]; return t((ME && ME.role === 'teacher' && r.tTitle) ? r.tTitle : r.title); }
+  function bottomList() { return isAdmin() ? BOTTOM_ADMIN : BOTTOM_TEACHER; }
   function parseHash() {
     var h = (location.hash || '').replace(/^#\/?/, '').split('/');
     return { name: h[0] || 'dashboard', arg: h[1] ? decodeURIComponent(h[1]) : '' };
@@ -1149,7 +1207,9 @@
     var link = function (k) { return '<a href="#/' + k + '" data-route="' + k + '"><span class="ni">' + ROUTES[k].icon + '</span><span class="nl">' + esc(routeTitle(k)) + navBadge(k) + '</span></a>'; };
     var mine = ROUTE_ORDER.filter(function (k) { return ROUTES[k].roles.indexOf(ME.role) >= 0; });
     $('#sidenav').innerHTML = mine.map(link).join('');
-    $('#bottomnav').innerHTML = (isAdmin() ? BOTTOM_ADMIN : mine).map(link).join('');
+    $('#bottomnav').innerHTML = bottomList().filter(function (k) { return ROUTES[k].roles.indexOf(ME.role) >= 0; }).map(link).join('');
+    applyLangAttr();
+    var so = $('[data-act=logout] .hide-xs'); if (so) so.textContent = t('Sign out');
     render();
   }
   function render() {
@@ -1161,7 +1221,7 @@
       if (history.replaceState) history.replaceState(null, '', '#/dashboard');
     }
     $$('[data-route]').forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-route') === key); });
-    if (isAdmin() && BOTTOM_ADMIN.indexOf(key) < 0) { var mb = $('#bottomnav [data-route="more"]'); if (mb) mb.classList.add('active'); }
+    if (bottomList().indexOf(key) < 0) { var mb = $('#bottomnav [data-route="more"]'); if (mb) mb.classList.add('active'); }
     $('#page-title').textContent = routeTitle(key);
     document.title = routeTitle(key) + ' · The Little Wings';
     var view = $('#view');
@@ -1172,6 +1232,7 @@
       view.innerHTML = emptyState('😕', 'Something went wrong', 'Please reload the page. If it keeps happening, take a backup from Settings. (' + e.message + ')');
     }
     hydratePhotos(view);
+    hydrateMedia(view);
     var routeId = key + '/' + p.arg;
     if (routeId !== UI.lastRoute) { window.scrollTo(0, 0); UI.lastRoute = routeId; }
   }
@@ -1620,6 +1681,9 @@
       (s.address ? row('Address', esc(s.address)) : '') +
       (isAdmin() ? row('Yearly fee', num(s.yearlyFee) ? inr(s.yearlyFee) : '—') : '') +
       (isAdmin() ? row('Monthly fee', effectiveMonthly(s) ? inr(effectiveMonthly(s)) + (num(s.yearlyFee) && !(s.classId === 'nursery' && num(s.monthlyFee) > 0) ? ' <small class="muted">(yearly ÷ 12)</small>' : (s.classId === 'nursery' && num(s.monthlyFee) > 0 ? ' <small class="muted">(nursery)</small>' : '')) : '—') : '') +
+      (isAdmin() && s.vanId && vanById(s.vanId) ? row('Van', esc(vanById(s.vanId).name) + (num(s.vanFee) ? ' · ' + inr(s.vanFee) + ' / month' + (isMonth(s.vanFrom) ? ' from ' + esc(fmtMonth(s.vanFrom)) : '') : '')) : '') +
+      (isAdmin() && !s.vanId && num(s.vanFee) > 0 && isMonth(s.vanTo) ? row('Van', 'Ended ' + esc(fmtMonth(s.vanTo)) + ' · ' + inr(s.vanFee) + ' / month until then') : '') +
+      (s.academicYear ? row(t('Academic year'), esc(s.academicYear)) : '') +
       (isAdmin() && siblingDiscount(s) ? row('Sibling discount', '−' + inr(siblingDiscount(s)) + ' / month <small class="muted">(pays ' + inr(netMonthly(s)) + ')</small>') : '') +
       row('Emergency contact', esc(s.emergency || '—')) + row('Authorised pickup', esc(s.pickup || '—')) + '</div>' +
       (s.medical ? '<div class="callout med"><b>⚕️ Medical notes</b><p>' + esc(s.medical) + '</p></div>' : '') +
@@ -1631,6 +1695,7 @@
         (pays.length ? '<ul class="mini-list">' + pays.slice(0, 6).map(function (p) { return '<li><span><b>' + esc(periodText(p)) + '</b><small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><span><b>' + inr(p.amount) + '</b> <button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="Receipt">🧾</button></span></li>'; }).join('') + '</ul>' : '<p class="muted">No payments yet.</p>');
     }
     if (isAdmin()) body += '<div id="student-parent-box">' + studentParentHTML(s) + '</div>';
+    if (isAdmin()) body += '<div id="student-docs-box">' + docsHTML(s) + '</div>';
     body += '<div class="form-actions">' + (isAdmin() && !isInactive(s) ? '<button class="btn ghost" data-act="pay-add" data-student="' + esc(s.id) + '">💰 Record payment</button>' : '') + '<button class="btn primary" data-act="student-edit" data-id="' + esc(s.id) + '">✏️ Edit</button></div>';
     openModal({ title: 'Student details', size: 'wide', body: body, mount: function (root) { hydratePhotos(root); } });
     if (isAdmin()) PX.loadLinks().then(function () { var b = document.getElementById('student-parent-box'); if (b) b.innerHTML = studentParentHTML(s); });
@@ -1722,6 +1787,7 @@
       dr.dirty = false;
       toast('Attendance saved for ' + className(cid) + ' · ' + fmtDate(date) + ' ✅');
       render();
+      if (date === todayISO() && list.some(function (s) { return rec[s.id] === 'A'; })) pushNotify('absent', { day: date, classId: cid });
     });
   }
   function monthGridHTML(cid, ym) {
@@ -1799,7 +1865,7 @@
     return html + '<div class="table-wrap"><table class="table responsive"><thead><tr><th>Student</th><th>Class</th><th class="num">Fee</th><th class="num">Paid</th><th class="num">Due</th><th>Parent</th><th class="act-col"><span class="sr">Actions</span></th></tr></thead><tbody>' +
       pendingList.sort(function (a, b) { return byName(a.s, b.s); }).map(function (x) {
         var msg = 'Dear ' + (primaryName(x.s) || 'Parent') + ', a gentle reminder from ' + S.settings.schoolName + ': ' + x.s.name + '’s fee for ' + fmtMonth(ym) + ' of ' + inr(x.due) + ' is pending. Please ignore if already paid. Thank you! 🙏';
-        return '<tr><td data-label="Student"><b>' + esc(x.s.name) + '</b></td><td data-label="Class">' + esc(classLabel(x.s)) + '</td><td data-label="Fee" class="num">' + inr(chargeFor(x.s, ym)) + (lateFine(x.s, ym) ? '<br><small class="muted">incl. late fee ' + inr(lateFine(x.s, ym)) + '</small>' : '') + (siblingDiscount(x.s) ? '<br><small class="muted">sibling −' + inr(siblingDiscount(x.s)) + '</small>' : '') + '</td><td data-label="Paid" class="num">' + inr(x.paid) + '</td><td data-label="Due" class="num"><b class="coral-t">' + inr(x.due) + '</b></td>' +
+        return '<tr><td data-label="Student"><b>' + esc(x.s.name) + '</b></td><td data-label="Class">' + esc(classLabel(x.s)) + '</td><td data-label="Fee" class="num">' + inr(chargeFor(x.s, ym)) + (vanMonth(x.s, ym) ? '<br><small class="muted">incl. van ' + inr(vanMonth(x.s, ym)) + '</small>' : '') + (fineFor(x.s, ym) ? '<br><small class="muted">incl. late fee ' + inr(fineFor(x.s, ym)) + '</small>' : '') + (siblingDiscount(x.s, baseMonth(x.s, ym)) ? '<br><small class="muted">sibling −' + inr(siblingDiscount(x.s, baseMonth(x.s, ym))) + '</small>' : '') + '</td><td data-label="Paid" class="num">' + inr(x.paid) + '</td><td data-label="Due" class="num"><b class="coral-t">' + inr(x.due) + '</b></td>' +
           '<td data-label="Parent">' + esc(primaryName(x.s) || '') + ' ' + phoneLinks(primaryPhone(x.s), x.s.whatsapp, msg) + '</td><td class="actions"><button class="btn small primary" data-act="pay-add" data-student="' + esc(x.s.id) + '" data-month="' + ym + '">Collect</button></td></tr>';
       }).join('') + '</tbody></table></div>';
   }
@@ -1869,10 +1935,11 @@
           var s = studentById(sel.value);
           if (!s || !isMonth(mon.value)) { hint.hidden = true; return; }
           var ms = monthsFrom(mon.value, parseInt(cnt.value, 10) || 1);
-          var fee = netMonthly(s), paid = ms.reduce(function (a, m) { return a + paidFor(s.id, m); }, 0), due = ms.reduce(function (a, m) { return a + dueFor(s, m); }, 0);
-          var fine = ms.reduce(function (a, m) { return a + (feeApplies(s, m) ? lateFine(s, m) : 0); }, 0), disc = siblingDiscount(s);
+          var fee = ms.reduce(function (a, m) { return a + (feeApplies(s, m) ? netMonth(s, m) : 0); }, 0), paid = ms.reduce(function (a, m) { return a + paidFor(s.id, m); }, 0), due = ms.reduce(function (a, m) { return a + dueFor(s, m); }, 0);
+          var van = ms.reduce(function (a, m) { return a + (feeApplies(s, m) ? vanMonth(s, m) : 0); }, 0);
+          var fine = ms.reduce(function (a, m) { return a + fineFor(s, m); }, 0), disc = siblingDiscount(s);
           hint.hidden = false;
-          hint.innerHTML = '<b>' + esc(s.name) + '</b> · ' + esc(window.LWReceipt ? window.LWReceipt.period(ms) : fmtMonth(mon.value)) + ': fee ' + inr(fee * ms.length) + (disc ? ' <small>(sibling −' + inr(disc) + '/month)</small>' : '') + (fine ? ' + late fee ' + inr(fine) : '') + ' · paid ' + inr(paid) + ' · <b>due ' + inr(due) + '</b>' + (mon.value < admMonth(s) ? '<br><small class="warn-t">This month is before the admission date (' + fmtDate(s.admissionDate) + ').</small>' : '');
+          hint.innerHTML = '<b>' + esc(s.name) + '</b> · ' + esc(window.LWReceipt ? window.LWReceipt.period(ms) : fmtMonth(mon.value)) + ': fee ' + inr(fee) + (disc ? ' <small>(sibling −' + inr(disc) + '/month)</small>' : '') + (van ? ' + van ' + inr(van) : '') + (fine ? ' + late fee ' + inr(fine) : '') + ' · paid ' + inr(paid) + ' · <b>due ' + inr(due) + '</b>' + (mon.value < admMonth(s) ? '<br><small class="warn-t">This month is before the admission date (' + fmtDate(s.admissionDate) + ').</small>' : '');
           if (!amtTouched) amt.value = due > 0 ? due : '';
         }
         sel.addEventListener('change', upd); mon.addEventListener('change', upd); cnt.addEventListener('change', upd); upd();
@@ -1889,7 +1956,7 @@
         var n = parseInt(g('count'), 10); if (!(n >= 1 && n <= 12)) n = 1;
         var ms = monthsFrom(g('month'), n);
         var due = ms.reduce(function (a, m) { return a + dueFor(s, m); }, 0);
-        var fineIn = ms.reduce(function (a, m) { return a + (feeApplies(s, m) && dueFor(s, m) > 0 ? lateFine(s, m) : 0); }, 0);
+        var fineIn = ms.reduce(function (a, m) { return a + (dueFor(s, m) > 0 ? fineFor(s, m) : 0); }, 0);
         return (netMonthly(s) && amount > due ? confirmBox('This is more than the amount due for ' + periodText({ months: ms }) + ' (' + inr(due) + '). Save anyway?', { ok: 'Save', danger: false, title: 'Amount more than due' }) : Promise.resolve(true)).then(function (go) {
           if (!go) return false;
           var r = nextReceiptNo();
@@ -1897,6 +1964,7 @@
           var p = { id: uid(), seq: r.seq, receiptNo: r.no, studentId: s.id, studentName: s.name, parentName: primaryName(s) || '', classId: s.classId, month: ms[0],
             amount: amt2, mode: g('mode'), ref: g('ref'), paidOn: g('paidOn'), note: g('note'), receivedBy: (ME && ME.name) || S.settings.owner || '', monthlyFee: netMonthly(s), yearlyFee: num(s.yearlyFee), createdAt: new Date().toISOString() };
           if (siblingDiscount(s)) p.discount = siblingDiscount(s);
+          var vanIn = vanMonth(s, ms[0]); if (vanIn > 0) p.vanFee = vanIn;
           if (fineIn > 0) p.lateFee = round2(Math.min(fineIn, amt2));
           if (ms.length > 1) { p.months = ms; p.alloc = allocate(s, ms, amt2); }
           S.payments.push(p);
@@ -1920,7 +1988,7 @@
       receiptNo: p.receiptNo, date: p.paidOn, studentName: p.studentName, className: (s ? classLabel(s) : className(p.classId)), parentName: p.parentName || (s && primaryName(s)) || '',
       months: payMonths(p), monthlyFee: p.monthlyFee != null ? p.monthlyFee : (s ? effectiveMonthly(s) : 0), yearlyFee: (p.yearlyFee != null ? p.yearlyFee : (s ? s.yearlyFee : 0)), amount: p.amount, mode: p.mode, ref: p.ref,
       balance: bal, balanceLabel: hasSnap ? 'Balance due after this payment' : 'Balance due (as on ' + fmtDate(todayISO()) + ')',
-      receivedBy: p.receivedBy || '', copy: copy || '', discount: num(p.discount), lateFee: num(p.lateFee)
+      receivedBy: p.receivedBy || '', copy: copy || '', discount: num(p.discount), lateFee: num(p.lateFee), vanFee: num(p.vanFee)
     };
   }
   function receiptText(p) { return window.LWReceipt.text(receiptData(p)); }
@@ -2282,19 +2350,20 @@
    * MORE (phone menu)
    * ===================================================================== */
   function viewMore() {
-    var items = ROUTE_ORDER.filter(function (k) { return BOTTOM_ADMIN.indexOf(k) < 0 && k !== 'more' && ROUTES[k].roles.indexOf(ME.role) >= 0; });
-    var sub = { notices: 'School and class notices', pending: 'Dues and WhatsApp reminders', reports: 'Fees, attendance, enquiries, profit', expenses: 'Rent, snacks, stationery…', staff: 'Staff, salary, staff attendance', holidays: 'Holidays and events', backup: 'Download Excel / JSON backup', settings: 'School, fee rules, logins' };
+    var items = ROUTE_ORDER.filter(function (k) { return bottomList().indexOf(k) < 0 && k !== 'more' && ROUTES[k].roles.indexOf(ME.role) >= 0; });
     return '<div class="more-grid">' + items.map(function (k) {
-      return '<a class="more-tile" href="#/' + k + '"><span class="mt-i">' + ROUTES[k].icon + '</span><span><b>' + esc(routeTitle(k)) + navBadge(k) + '</b><small>' + esc(sub[k] || '') + '</small></span></a>';
-    }).join('') + '</div>';
+      var sub = k === 'settings' && !isAdmin() ? 'Password, language, app' : MORE_SUB[k];
+      return '<a class="more-tile" href="#/' + k + '"><span class="mt-i">' + ROUTES[k].icon + '</span><span><b>' + esc(routeTitle(k)) + navBadge(k) + '</b><small>' + esc(sub ? t(sub) : '') + '</small></span></a>';
+    }).join('') + '</div>' + (PART_B ? '<section class="card"><h3>🌐 ' + esc(t('Language')) + '</h3>' + langSelectHTML('lang-big') + '</section>' : '');
   }
   function navBadge(k) {
     var n = 0;
     if (k === 'enquiries' && isAdmin()) n = S.enquiries.filter(function (e) { return e.web && !e.seen; }).length;
     if (k === 'backup' && isAdmin()) n = backupDue() ? 1 : 0;
-    if (k === 'more' && isAdmin()) n = backupDue() ? 1 : 0;
+    if (k === 'feedback' && isAdmin()) n = S.feedback.filter(function (f) { return (f.status || 'New') === 'New'; }).length;
+    if (k === 'more' && isAdmin()) n = (backupDue() ? 1 : 0) + S.feedback.filter(function (f) { return (f.status || 'New') === 'New'; }).length;
     if (!n) return '';
-    return ' <span class="nbadge">' + (k === 'backup' || k === 'more' ? '!' : n) + '</span>';
+    return ' <span class="nbadge">' + (k === 'backup' || (k === 'more' && backupDue()) ? '!' : n) + '</span>';
   }
 
   /* =====================================================================
@@ -2309,7 +2378,7 @@
       var dueMonths = [], total = 0, fine = 0;
       months.forEach(function (m) {
         var d = dueFor(s, m);
-        if (d > 0) { dueMonths.push(m); total += d; fine += lateFine(s, m); }
+        if (d > 0) { dueMonths.push(m); total += d; fine += fineFor(s, m); }
       });
       var now = dueFor(s, cur);
       var phone = s.whatsapp && validPhone(s.whatsapp) ? s.whatsapp : primaryPhone(s);
@@ -2328,6 +2397,7 @@
     var rec = { id: x.s.id, at: new Date().toISOString(), amount: x.total, months: x.months, count: (r && r.count || 0) + 1, by: (ME && ME.name) || '' };
     S.fee_reminders = S.fee_reminders.filter(function (y) { return y.id !== x.s.id; }).concat([rec]);
     persist('fee_reminders');
+    if (S.settings.showFeesToParents === true) pushNotify('fee', { ref: x.s.id });
   }
   function feeRulesNote() {
     var r = feeRules(), out = [];
@@ -2838,7 +2908,7 @@
       '<button class="btn primary">Change password</button></form>';
     if (!isAdmin()) {
       return '<section class="card"><h2>👤 My account</h2><p><b>' + esc(ME.name) + '</b> · Teacher, ' + esc(className(ME.classId)) + '<br><small class="muted">' + esc(ME.email || '') + '</small></p></section>' +
-        '<section class="card"><h3>🔐 Change my password</h3>' + pwForm + '</section>' + secNote +
+        '<section class="card"><h3>🔐 Change my password</h3>' + pwForm + '</section>' + langCardHTML() + secNote +
         '<div class="callout"><b>☁️ Saved online</b><p>Attendance and student details you save here go to the school’s online database, so the admin sees them on their phone too. If you are offline, changes wait on this phone and upload automatically when the internet is back (watch the badge at the top).</p></div>' + syncInfoHTML() +
         installHintHTML() +
         '<p class="muted small center">The Little Wings Dashboard v' + APP_VERSION + ' · Times in India Standard Time</p>';
@@ -2872,6 +2942,7 @@
 
     html += '<section class="card"><h2>💰 Fees in the Parents app</h2><label class="switch-row"><input type="checkbox" data-change="fees-to-parents"' + (S.settings.showFeesToParents === true ? ' checked' : '') + '><span><b>Show fees to parents</b><br><small class="muted">When on, each parent sees only their own child’s monthly fee, pending amount and receipts in the Parents app (no notes, no other children). When off, parents see “Fee details are not shown yet”. The database checks this switch, so it cannot be bypassed.</small></span></label></section>';
     html += parentLoginsCardHTML();
+    html += alertsCardHTML() + yearCardHTML() + langCardHTML();
     html += '<section class="card"><h2>🔐 My password</h2><p class="muted small">Signed in as ' + esc(ME.email || '') + '</p>' + pwForm + '</section>' + secNote;
 
     var r = feeRules();
@@ -3075,9 +3146,10 @@
     if (noticeAudiences().map(function (a) { return a.value; }).indexOf(aud) < 0) return fieldError(f, 'audience', 'Choose who should see it');
     if (exp && (!isISODate(exp) || exp < todayISO())) return fieldError(f, 'expires_on', 'Pick today or a later date');
     if (navigator.onLine === false) { toast('You are offline. Post the notice when the internet is back.', 'err'); return; }
-    return SB.from('notices').insert({ title: title, body: body, audience: aud, pinned: fd.get('pinned') === '1', expires_on: exp || null }).then(function (r) {
+    return SB.from('notices').insert({ title: title, body: body, audience: aud, pinned: fd.get('pinned') === '1', expires_on: exp || null }).select('id').then(function (r) {
       if (r.error) { toast('Could not post: ' + (/row-level|permission/i.test(r.error.message) ? 'not allowed for your account' : r.error.message), 'err'); return; }
       f.reset(); toast('Notice posted 📢');
+      if (r.data && r.data[0]) pushNotify('notice', { ref: r.data[0].id });
       return PX.loadNotices(true).then(refreshNoticeList);
     });
   };
@@ -3200,11 +3272,11 @@
   }
   function cleanId(v) { v = String(v == null ? '' : v); return v && v.length <= 64 ? v : ''; }
   function mergeData(d) {
-    var c = { students: 0, payments: 0, enquiries: 0, staff: 0, days: 0, holidays: 0, expenses: 0, salaries: 0, staff_attendance: 0, fee_reminders: 0 };
-    ['students', 'payments', 'enquiries', 'staff', 'holidays', 'expenses', 'salaries', 'staff_attendance', 'fee_reminders'].forEach(function (t) {
+    var c = { students: 0, payments: 0, enquiries: 0, staff: 0, days: 0, holidays: 0, expenses: 0, salaries: 0, staff_attendance: 0, fee_reminders: 0, vans: 0, class_posts: 0, timetables: 0, exams: 0, marks: 0, albums: 0 };
+    ['students', 'payments', 'enquiries', 'staff', 'holidays', 'expenses', 'salaries', 'staff_attendance', 'fee_reminders', 'vans', 'class_posts', 'timetables', 'exams', 'marks', 'albums'].forEach(function (t) {
       asArray(d[t]).forEach(function (r) {
         if (!r || typeof r !== 'object' || !cleanId(r.id)) return;
-        if (t === 'students' && !CLASS_BY_ID[r.classId]) return;
+        if ((t === 'students' || t === 'class_posts' || t === 'timetables' || t === 'exams' || t === 'marks') && !CLASS_BY_ID[r.classId]) return;
         var rec = JSON.parse(JSON.stringify(r)); rec.id = String(r.id);
         var idx = -1;
         for (var i = 0; i < S[t].length; i++) if (S[t][i].id === rec.id) { idx = i; break; }
@@ -3225,7 +3297,7 @@
       var ct = Object.assign({}, S.settings.classTeachers, asObject(d.settings.classTeachers));
       S.settings = Object.assign({}, S.settings, d.settings, { receiptSeq: seq, classTeachers: ct });
     }
-    persist('settings', 'students', 'attendance', 'payments', 'enquiries', 'staff', 'holidays', 'expenses', 'salaries', 'staff_attendance', 'fee_reminders');
+    persist('settings', 'students', 'attendance', 'payments', 'enquiries', 'staff', 'holidays', 'expenses', 'salaries', 'staff_attendance', 'fee_reminders', 'vans', 'class_posts', 'timetables', 'exams', 'marks', 'albums');
     return c;
   }
   function confirmMerge(obj, title, intro) {
@@ -3272,6 +3344,1031 @@
       if (ok) logout();
     });
   }
+
+  /* =====================================================================
+   * v2.6 (BATCH 2) — language, media helpers, phone alerts, homework &
+   * daily updates, timetable, exams & report cards, admission documents,
+   * transport, ID cards & TC, promotion, parent messages, audit log, gallery.
+   * ===================================================================== */
+  var LANGS = [{ id: 'en', label: 'English', short: 'EN' }, { id: 'te', label: 'తెలుగు', short: 'తె' }, { id: 'hi', label: 'हिन्दी', short: 'हि' }];
+  // Navigation + key labels. Anything missing falls back to English.
+  var I18N = {
+    te: {
+      'Dashboard': 'డాష్‌బోర్డ్', 'My Class': 'నా తరగతి', 'Classes': 'తరగతులు', 'Students': 'విద్యార్థులు', 'Attendance': 'హాజరు',
+      'Notices': 'నోటీసులు', 'Fees': 'ఫీజులు', 'Pending fees': 'బకాయి ఫీజులు', 'Enquiries': 'విచారణలు', 'Reports': 'నివేదికలు',
+      'Expenses': 'ఖర్చులు', 'Staff': 'సిబ్బంది', 'Holidays': 'సెలవులు', 'Backup': 'బ్యాకప్', 'Settings': 'సెట్టింగ్‌లు', 'Account': 'ఖాతా',
+      'More': 'మరిన్ని', 'Homework & updates': 'హోంవర్క్ & అప్‌డేట్‌లు', 'Timetable': 'టైమ్‌టేబుల్', 'Exams & reports': 'పరీక్షలు & రిపోర్టులు',
+      'Transport': 'రవాణా (వ్యాన్)', 'ID cards & TC': 'ఐడీ కార్డులు & టీసీ', 'Promotion': 'తరగతి ప్రమోషన్', 'Parent messages': 'తల్లిదండ్రుల సందేశాలు',
+      'Audit log': 'మార్పుల రికార్డు', 'Gallery': 'గ్యాలరీ', 'Sign out': 'సైన్ అవుట్', 'Language': 'భాష', 'Save': 'సేవ్ చేయండి', 'Cancel': 'రద్దు',
+      'Delete': 'తొలగించు', 'Edit': 'మార్చు', 'Print / PDF': 'ప్రింట్ / PDF', 'Class': 'తరగతి', 'Date': 'తేదీ', 'New post': 'కొత్త పోస్ట్',
+      'Homework': 'హోంవర్క్', 'Today we learned': 'ఈరోజు మేము నేర్చుకున్నది', 'Meal': 'భోజనం', 'Title': 'శీర్షిక', 'Details': 'వివరాలు',
+      'Photo (optional)': 'ఫోటో (ఐచ్ఛికం)', 'Report card': 'ప్రోగ్రెస్ రిపోర్ట్', 'Report cards': 'ప్రోగ్రెస్ రిపోర్టులు', 'Marks': 'మార్కులు', 'Remarks': 'అభిప్రాయం', 'Published': 'ప్రచురించబడింది',
+      'Not published': 'ప్రచురించలేదు', 'New exam': 'కొత్త పరీక్ష', 'Subjects': 'విషయాలు', 'New album': 'కొత్త ఆల్బమ్', 'Whole school': 'మొత్తం పాఠశాల',
+      'Upload photos / videos': 'ఫోటోలు / వీడియోలు అప్‌లోడ్ చేయండి', 'Edit timetable': 'టైమ్‌టేబుల్ మార్చండి', 'Add van': 'వ్యాన్ జోడించండి', 'Print van list': 'వ్యాన్ జాబితా ప్రింట్',
+      'Print ID cards': 'ఐడీ కార్డులు ప్రింట్', 'Transfer certificate': 'బదిలీ సర్టిఫికేట్ (టీసీ)', 'Promote students': 'విద్యార్థులను ప్రమోట్ చేయండి', 'Undo last promotion': 'చివరి ప్రమోషన్ రద్దు',
+      'Mark seen': 'చూసినట్లు గుర్తించు', 'Reply': 'జవాబు', 'New': 'కొత్తది', 'Seen': 'చూశారు', 'Replied': 'జవాబిచ్చారు', 'All': 'అన్నీ',
+      'Admission documents': 'ప్రవేశ పత్రాలు', 'Upload': 'అప్‌లోడ్', 'View': 'చూడండి', 'Academic year': 'విద్యా సంవత్సరం', 'Phone alerts': 'ఫోన్ అలర్ట్‌లు',
+      'Record payment': 'చెల్లింపు నమోదు', 'Add student': 'విద్యార్థిని జోడించండి', 'Students, homework, exams': 'విద్యార్థులు, హోంవర్క్, పరీక్షలు',
+      'Daily homework, learning and meal notes': 'రోజువారీ హోంవర్క్, నేర్చుకున్నవి, భోజనం', 'Weekly class timetable': 'వారపు తరగతి టైమ్‌టేబుల్',
+      'Marks, grades and report cards': 'మార్కులు, గ్రేడ్‌లు, ప్రోగ్రెస్ రిపోర్టులు', 'School photos and videos': 'పాఠశాల ఫోటోలు, వీడియోలు',
+      'Vans, drivers and van fees': 'వ్యాన్‌లు, డ్రైవర్లు, వ్యాన్ ఫీజు', 'Printable ID cards and TC': 'ప్రింట్ చేయగల ఐడీ కార్డులు, టీసీ',
+      'Move students to the next class': 'విద్యార్థులను తదుపరి తరగతికి పంపండి', 'Messages from parents': 'తల్లిదండ్రుల నుండి సందేశాలు', 'Who changed what': 'ఎవరు ఏమి మార్చారు',
+      'School and class notices': 'పాఠశాల, తరగతి నోటీసులు', 'Dues and WhatsApp reminders': 'బకాయిలు, వాట్సాప్ రిమైండర్లు', 'Fees, attendance, enquiries, profit': 'ఫీజులు, హాజరు, విచారణలు, లాభం',
+      'Rent, snacks, stationery…': 'అద్దె, స్నాక్స్, స్టేషనరీ…', 'Staff, salary, staff attendance': 'సిబ్బంది, జీతం, సిబ్బంది హాజరు', 'Holidays and events': 'సెలవులు, కార్యక్రమాలు',
+      'Download Excel / JSON backup': 'ఎక్సెల్ / JSON బ్యాకప్ డౌన్‌లోడ్', 'School, fee rules, logins': 'పాఠశాల, ఫీజు నియమాలు, లాగిన్‌లు', 'Password, language, app': 'పాస్‌వర్డ్, భాష, యాప్'
+    },
+    hi: {
+      'Dashboard': 'डैशबोर्ड', 'My Class': 'मेरी कक्षा', 'Classes': 'कक्षाएँ', 'Students': 'विद्यार्थी', 'Attendance': 'उपस्थिति',
+      'Notices': 'सूचनाएँ', 'Fees': 'फीस', 'Pending fees': 'बकाया फीस', 'Enquiries': 'पूछताछ', 'Reports': 'रिपोर्ट',
+      'Expenses': 'खर्च', 'Staff': 'स्टाफ़', 'Holidays': 'छुट्टियाँ', 'Backup': 'बैकअप', 'Settings': 'सेटिंग्स', 'Account': 'खाता',
+      'More': 'और', 'Homework & updates': 'गृहकार्य और अपडेट', 'Timetable': 'समय-सारणी', 'Exams & reports': 'परीक्षा और रिपोर्ट कार्ड',
+      'Transport': 'परिवहन (वैन)', 'ID cards & TC': 'आईडी कार्ड और टीसी', 'Promotion': 'कक्षा उन्नति', 'Parent messages': 'अभिभावकों के संदेश',
+      'Audit log': 'बदलाव रिकॉर्ड', 'Gallery': 'गैलरी', 'Sign out': 'साइन आउट', 'Language': 'भाषा', 'Save': 'सहेजें', 'Cancel': 'रद्द करें',
+      'Delete': 'हटाएँ', 'Edit': 'बदलें', 'Print / PDF': 'प्रिंट / PDF', 'Class': 'कक्षा', 'Date': 'तारीख', 'New post': 'नई पोस्ट',
+      'Homework': 'गृहकार्य', 'Today we learned': 'आज हमने सीखा', 'Meal': 'भोजन', 'Title': 'शीर्षक', 'Details': 'विवरण',
+      'Photo (optional)': 'फ़ोटो (वैकल्पिक)', 'Report card': 'रिपोर्ट कार्ड', 'Report cards': 'रिपोर्ट कार्ड', 'Marks': 'अंक', 'Remarks': 'टिप्पणी', 'Published': 'प्रकाशित',
+      'Not published': 'प्रकाशित नहीं', 'New exam': 'नई परीक्षा', 'Subjects': 'विषय', 'New album': 'नया एल्बम', 'Whole school': 'पूरा स्कूल',
+      'Upload photos / videos': 'फ़ोटो / वीडियो अपलोड करें', 'Edit timetable': 'समय-सारणी बदलें', 'Add van': 'वैन जोड़ें', 'Print van list': 'वैन सूची प्रिंट करें',
+      'Print ID cards': 'आईडी कार्ड प्रिंट करें', 'Transfer certificate': 'स्थानांतरण प्रमाणपत्र (टीसी)', 'Promote students': 'विद्यार्थियों को अगली कक्षा में भेजें', 'Undo last promotion': 'पिछली उन्नति वापस लें',
+      'Mark seen': 'देखा हुआ चिह्नित करें', 'Reply': 'जवाब', 'New': 'नया', 'Seen': 'देखा गया', 'Replied': 'जवाब दिया', 'All': 'सभी',
+      'Admission documents': 'प्रवेश दस्तावेज़', 'Upload': 'अपलोड', 'View': 'देखें', 'Academic year': 'शैक्षणिक वर्ष', 'Phone alerts': 'फ़ोन अलर्ट',
+      'Record payment': 'भुगतान दर्ज करें', 'Add student': 'विद्यार्थी जोड़ें', 'Students, homework, exams': 'विद्यार्थी, गृहकार्य, परीक्षा',
+      'Daily homework, learning and meal notes': 'रोज़ का गृहकार्य, सीखना और भोजन', 'Weekly class timetable': 'कक्षा की साप्ताहिक समय-सारणी',
+      'Marks, grades and report cards': 'अंक, ग्रेड और रिपोर्ट कार्ड', 'School photos and videos': 'स्कूल की फ़ोटो और वीडियो',
+      'Vans, drivers and van fees': 'वैन, ड्राइवर और वैन फीस', 'Printable ID cards and TC': 'प्रिंट करने योग्य आईडी कार्ड और टीसी',
+      'Move students to the next class': 'विद्यार्थियों को अगली कक्षा में भेजें', 'Messages from parents': 'अभिभावकों के संदेश', 'Who changed what': 'किसने क्या बदला',
+      'School and class notices': 'स्कूल और कक्षा की सूचनाएँ', 'Dues and WhatsApp reminders': 'बकाया और व्हाट्सऐप रिमाइंडर', 'Fees, attendance, enquiries, profit': 'फीस, उपस्थिति, पूछताछ, लाभ',
+      'Rent, snacks, stationery…': 'किराया, नाश्ता, स्टेशनरी…', 'Staff, salary, staff attendance': 'स्टाफ़, वेतन, स्टाफ़ उपस्थिति', 'Holidays and events': 'छुट्टियाँ और कार्यक्रम',
+      'Download Excel / JSON backup': 'एक्सेल / JSON बैकअप डाउनलोड करें', 'School, fee rules, logins': 'स्कूल, फीस नियम, लॉगिन', 'Password, language, app': 'पासवर्ड, भाषा, ऐप'
+    }
+  };
+  var LANG = (function () { var l = ''; if (!PART_B) return 'en'; try { l = localStorage.getItem('lw-lang') || ''; } catch (e) { /* ignore */ } return I18N[l] ? l : 'en'; })();
+  function langSaved() { try { return !!localStorage.getItem('lw-lang'); } catch (e) { return false; } }
+  function t(s) { return (I18N[LANG] && I18N[LANG][s]) || s; }
+  if (!PART_B) { (function rm() { var ls = document.getElementById('lang-sel'); if (ls) ls.parentNode.removeChild(ls); else if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', rm); })(); }
+  function applyLangAttr() { document.documentElement.lang = LANG === 'en' ? 'en-IN' : LANG + '-IN'; var sel = document.getElementById('lang-sel'); if (sel) sel.value = LANG; }
+  function setLang(l, fromServer) {
+    if (l !== 'en' && !I18N[l]) l = 'en';
+    LANG = l;
+    try { localStorage.setItem('lw-lang', l); } catch (e) { /* ignore */ }
+    applyLangAttr();
+    // Saved per user too (own user_metadata only; harmless if offline).
+    if (!fromServer && SB && ME) SB.auth.updateUser({ data: { lw_lang: l } }).catch(function () {});
+    if (ME) showShell();
+  }
+  function langSelectHTML(cls) {
+    if (!PART_B) return '';
+    return '<select class="' + (cls || '') + '" data-change="lang" aria-label="Language">' + LANGS.map(function (l) { return '<option value="' + l.id + '"' + (l.id === LANG ? ' selected' : '') + '>' + esc(l.label) + '</option>'; }).join('') + '</select>';
+  }
+
+  /* ---------- media (private buckets, signed URLs) ---------- */
+  var mediaCache = {};
+  function signedURL(bucket, path, secs) {
+    if (!SB || !path) return Promise.resolve('');
+    secs = secs || 3600;
+    var k = bucket + '/' + path, c = mediaCache[k];
+    if (c && c.exp > Date.now() + 30000) return Promise.resolve(c.url);
+    return SB.storage.from(bucket).createSignedUrl(path, secs).then(function (r) {
+      var url = r && r.data && r.data.signedUrl;
+      if (!url) return '';
+      mediaCache[k] = { url: url, exp: Date.now() + (secs - 120) * 1000 };
+      return url;
+    }).catch(function () { return ''; });
+  }
+  function mediaHTML(bucket, path, type, cls) {
+    return '<div class="media ' + (cls || '') + '" data-media-bucket="' + esc(bucket) + '" data-media-path="' + esc(path) + '" data-media-type="' + (type === 'video' ? 'video' : 'image') + '"><span class="media-wait">' + (type === 'video' ? '🎬' : '🖼️') + '</span></div>';
+  }
+  function hydrateMedia(root) {
+    if (!root || !root.querySelectorAll) return;
+    Array.prototype.forEach.call(root.querySelectorAll('[data-media-path]'), function (el) {
+      if (el.getAttribute('data-media-loaded')) return;
+      el.setAttribute('data-media-loaded', '1');
+      signedURL(el.getAttribute('data-media-bucket'), el.getAttribute('data-media-path')).then(function (url) {
+        if (!url || !el.parentNode) { el.innerHTML = '<span class="media-wait">⚠️</span>'; return; }
+        var m;
+        if (el.getAttribute('data-media-type') === 'video') { m = document.createElement('video'); m.controls = true; m.preload = 'metadata'; m.setAttribute('playsinline', ''); }
+        else { m = document.createElement('img'); m.alt = ''; m.loading = 'lazy'; if (!el.classList.contains('album-cover')) m.setAttribute('data-act', 'media-open'); }
+        m.src = url;
+        el.innerHTML = ''; el.appendChild(m);
+      });
+    });
+  }
+  function compressImg(file, max, q) {
+    return new Promise(function (resolve, reject) {
+      if (!file || !/^image\//.test(file.type || '')) return reject(new Error('Please choose a photo (JPEG or PNG)'));
+      var img = new Image(), src = URL.createObjectURL(file);
+      img.onload = function () {
+        var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        if (w > max || h > max) { if (w >= h) { h = Math.round(h * max / w) || 1; w = max; } else { w = Math.round(w * max / h) || 1; h = max; } }
+        var c = document.createElement('canvas'); c.width = w; c.height = h;
+        var ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(src);
+        c.toBlob(function (b) { if (!b) reject(new Error('Could not process the photo')); else resolve(b); }, 'image/jpeg', q || 0.8);
+      };
+      img.onerror = function () { URL.revokeObjectURL(src); reject(new Error('Could not read the photo')); };
+      img.src = src;
+    });
+  }
+  function upload(bucket, path, blob, type) {
+    return SB.storage.from(bucket).upload(path, blob, { upsert: true, contentType: type || blob.type || 'application/octet-stream', cacheControl: '3600' }).then(function (r) {
+      if (r.error) throw new Error(/row-level|security|unauthor/i.test(r.error.message || '') ? 'Upload not allowed for your account' : (r.error.message || 'Upload failed'));
+      delete mediaCache[bucket + '/' + path];
+      return path;
+    });
+  }
+  function removeFiles(bucket, paths) {
+    paths = paths.filter(Boolean);
+    if (!SB || !paths.length) return Promise.resolve();
+    return SB.storage.from(bucket).remove(paths).then(function () { paths.forEach(function (p) { delete mediaCache[bucket + '/' + p]; }); }).catch(function () {});
+  }
+  function addDays(iso, n) { return new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) + n * 86400000).toISOString().slice(0, 10); }
+  function b2Class(key) {
+    if (!isAdmin()) return CLASS_BY_ID[ME.classId] ? ME.classId : '';
+    if (!CLASS_BY_ID[UI[key]]) UI[key] = CLASSES[0].id;
+    return UI[key];
+  }
+  function classSelectHTML(key, allOpt) {
+    if (!isAdmin()) return '';
+    return field(t('Class'), '<select data-change="b2-class" data-key="' + key + '">' + options((allOpt ? [{ value: 'all', label: allOpt }] : []).concat(CLASSES.map(function (c) { return { value: c.id, label: c.emoji + ' ' + c.name }; })), UI[key]) + '</select>');
+  }
+  function noClassHTML() { return emptyState('🏫', 'No class linked to your login', 'Ask the admin to set your class in Settings → Teacher logins.'); }
+  function printSheet(inner, fileTitle, cls) {
+    var root = $('#print-root');
+    if (!root) return;
+    root.className = 'pdoc-root ' + (cls || '');
+    root.innerHTML = inner;
+    var old = document.title;
+    var restore = function () { document.title = old; root.innerHTML = ''; root.className = ''; window.removeEventListener('afterprint', restore); };
+    var imgs = $$('img', root).filter(function (i) { return !i.complete; }), left = imgs.length, done = false;
+    var go = function () { if (done) return; done = true; document.title = fileTitle || old; window.addEventListener('afterprint', restore); setTimeout(function () { window.print(); }, 80); };
+    if (!left) return go();
+    imgs.forEach(function (i) { i.onload = i.onerror = function () { if (--left <= 0) go(); }; });
+    setTimeout(go, 6000);
+  }
+  function waOpen(phone, text) { var url = waHref(phone, text); if (url) window.open(url, '_blank', 'noopener'); }
+
+  /* ---------- phone alerts (Web Push via the lw-push Edge Function) ---------- */
+  function pushCall(action, payload) {
+    var tokP = SB ? SB.auth.getSession().then(function (r) { return r.data.session ? r.data.session.access_token : null; }) : Promise.resolve(null);
+    return tokP.then(function (tok) {
+      if (!tok) throw new Error('Please sign in again.');
+      return fetch(CFG.supabaseUrl + '/functions/v1/lw-push', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: CFG.supabaseKey, Authorization: 'Bearer ' + tok },
+        body: JSON.stringify(Object.assign({ action: action }, payload || {}))
+      });
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (j) { if (!res.ok) throw new Error(j.error || ('Server error ' + res.status)); return j; });
+    });
+  }
+  // Fire-and-forget: upload pending changes first so the server sees them.
+  function pushNotify(kind, payload) {
+    if (!PART_B || !SB || navigator.onLine === false) return Promise.resolve(null);
+    return Store.flush().then(function () { return pushCall('notify', Object.assign({ kind: kind }, payload || {})); })
+      .then(function (r) { if (r && r.sent) toast('📲 Alert sent to ' + r.sent + ' parent phone' + (r.sent === 1 ? '' : 's')); return r; })
+      .catch(function (e) { console.warn('push', e && e.message); return null; });
+  }
+
+  /* ---------- homework & daily updates ---------- */
+  var POST_KINDS = [{ id: 'Homework', icon: '📚' }, { id: 'Learned', icon: '🌟' }, { id: 'Meal', icon: '🍱' }];
+  function postKind(k) { for (var i = 0; i < POST_KINDS.length; i++) if (POST_KINDS[i].id === k) return POST_KINDS[i]; return POST_KINDS[0]; }
+  function postKindLabel(k) { return k === 'Learned' ? t('Today we learned') : k === 'Meal' ? t('Meal') : t('Homework'); }
+  function findPost(id) { return S.class_posts.filter(function (p) { return p.id === id; })[0] || null; }
+  function viewHomework() {
+    var cid = b2Class('hwClass');
+    if (!cid) return noClassHTML();
+    var since = addDays(todayISO(), -45);
+    var posts = S.class_posts.filter(function (p) { return p.classId === cid && (p.date || '') >= since; })
+      .sort(function (a, b) { return a.date !== b.date ? (a.date < b.date ? 1 : -1) : (String(a.at || '') < String(b.at || '') ? 1 : -1); });
+    var html = '<div class="toolbar">' + classSelectHTML('hwClass') + '<button class="btn primary" data-act="post-add">➕ ' + esc(t('New post')) + '</button></div>' +
+      '<p class="muted small">Parents of ' + esc(className(cid)) + ' see these in the Parents app (last 30 days). New posts for today also send a phone alert to parents who turned alerts on.</p>';
+    if (!posts.length) return html + emptyState('📚', 'Nothing posted yet', 'Post today’s homework, “Today we learned…” or a meal note for ' + className(cid) + '.', '<button class="btn primary" data-act="post-add">➕ ' + esc(t('New post')) + '</button>');
+    var last = '';
+    posts.forEach(function (p) {
+      if (p.date !== last) { html += '<h3 class="day-h">' + esc(fmtDate(p.date)) + (p.date === todayISO() ? ' · <span class="tag">Today</span>' : '') + '</h3>'; last = p.date; }
+      var k = postKind(p.kind);
+      html += '<article class="card post"><div class="row between"><span class="tag post-' + esc(k.id.toLowerCase()) + '">' + k.icon + ' ' + esc(postKindLabel(k.id)) + '</span><span class="row gap">' +
+        '<button class="icon-btn" data-act="post-edit" data-id="' + esc(p.id) + '" title="Edit" aria-label="Edit">✏️</button><button class="icon-btn" data-act="post-del" data-id="' + esc(p.id) + '" title="Delete" aria-label="Delete">🗑️</button></span></div>' +
+        (p.title ? '<h3 class="post-title">' + esc(p.title) + '</h3>' : '') + (p.text ? '<p class="pre">' + esc(p.text) + '</p>' : '') +
+        (p.photo ? mediaHTML('class-media', p.photo, 'image', 'post-photo') : '') +
+        '<small class="muted">' + esc(p.by || '') + (p.at ? ' · ' + esc(stampIST(p.at)) : '') + '</small></article>';
+    });
+    return html;
+  }
+  function openPostForm(p) {
+    var cid = p ? p.classId : b2Class('hwClass');
+    if (!cid) return;
+    var body = '<form class="form" novalidate><div class="grid2">' +
+      (isAdmin() ? field(t('Class') + ' *', '<select name="classId"' + (p ? ' disabled' : '') + '>' + options(CLASSES.map(function (c) { return { value: c.id, label: c.emoji + ' ' + c.name }; }), cid) + '</select>') : '') +
+      field('Type *', '<select name="kind">' + options(POST_KINDS.map(function (k) { return { value: k.id, label: k.icon + ' ' + postKindLabel(k.id) }; }), p ? p.kind : 'Homework') + '</select>') +
+      field(t('Date') + ' *', '<input type="date" name="date" value="' + esc(p ? p.date : todayISO()) + '" max="' + addDays(todayISO(), 7) + '" required>') +
+      field(t('Title'), '<input name="title" maxlength="120" value="' + esc(p ? p.title || '' : '') + '" placeholder="e.g. Write A to E, 2 times">', '', 'span2') +
+      field(t('Details'), '<textarea name="text" rows="4" maxlength="2000" placeholder="Homework, what we learned today, or today’s meal">' + esc(p ? p.text || '' : '') + '</textarea>', '', 'span2') +
+      field(t('Photo (optional)'), '<input type="file" name="photo" accept="image/*">', (p && p.photo ? '<label class="check"><input type="checkbox" name="removePhoto" value="1"> Remove the current photo</label>' : '') + '<small class="hint">Compressed on this phone before upload.</small>', 'span2') +
+      '</div><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">' + esc(t('Cancel')) + '</button><button class="btn primary">' + esc(t('Save')) + '</button></div></form>';
+    openModal({
+      title: p ? 'Edit post' : t('New post') + ' · ' + className(cid), size: 'wide', body: body,
+      onSubmit: function (form, fd) {
+        var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
+        var c = p ? p.classId : (isAdmin() ? g('classId') : ME.classId);
+        var kind = postKind(g('kind')).id, date = g('date'), title = g('title').slice(0, 120), text = g('text').slice(0, 2000);
+        if (!CLASS_BY_ID[c]) { fieldError(form, 'classId', 'Choose a class'); return false; }
+        if (!isISODate(date)) { fieldError(form, 'date', 'Choose a date'); return false; }
+        if (!title && !text) { fieldError(form, 'title', 'Write a title or some details'); return false; }
+        var file = fd.get('photo'), id = p ? p.id : 'cp-' + uid();
+        var photo = p ? p.photo || '' : '';
+        var step = Promise.resolve();
+        if (file && file.size) {
+          step = compressImg(file, 1280, 0.8).then(function (b) { return b.size > 1900000 ? compressImg(file, 900, 0.7) : b; })
+            .then(function (b) { return upload('class-media', c + '/' + id + '.jpg', b, 'image/jpeg'); }).then(function (path) { photo = path; });
+        } else if (g('removePhoto') === '1' && photo) {
+          step = removeFiles('class-media', [photo]).then(function () { photo = ''; });
+        }
+        return step.then(function () {
+          var rec = { id: id, classId: c, kind: kind, date: date, title: title, text: text, photo: photo, by: p ? p.by : ME.name, at: p ? p.at : new Date().toISOString() };
+          if (p) rec.editedAt = new Date().toISOString();
+          S.class_posts = S.class_posts.filter(function (x) { return x.id !== id; }).concat([rec]);
+          persist('class_posts');
+          toast(p ? 'Post updated' : 'Posted for ' + className(c) + ' 📚');
+          render();
+          if (!p) pushNotify('post', { ref: id });
+          return true;
+        }).catch(function (e) { fieldError(form, 'photo', e.message); return false; });
+      }
+    });
+  }
+
+  /* ---------- timetable ---------- */
+  var TT_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  function ttOf(cid) { return S.timetables.filter(function (r) { return r.id === cid && r.classId === cid; })[0] || null; }
+  function ttPeriodHTML(p) {
+    p = p || { time: '', cells: [] };
+    return '<div class="tt-period card"><div class="row between">' + field('Time', '<input name="time" maxlength="30" value="' + esc(p.time || '') + '" placeholder="9:00 – 9:30">') +
+      '<button type="button" class="icon-btn" data-act="tt-row-del" title="Remove period" aria-label="Remove period">🗑️</button></div><div class="tt-cells">' +
+      TT_DAYS.map(function (d, i) { return field(d, '<input name="cell" data-day="' + i + '" maxlength="60" value="' + esc(asArray(p.cells)[i] || '') + '">'); }).join('') + '</div></div>';
+  }
+  function viewTimetable() {
+    var cid = b2Class('ttClass');
+    if (!cid) return noClassHTML();
+    var tt = ttOf(cid), periods = asArray(tt && tt.periods);
+    var html = '<div class="toolbar">' + classSelectHTML('ttClass') + (UI.ttEdit === cid ? '' : '<button class="btn primary" data-act="tt-edit">✏️ ' + esc(t('Edit timetable')) + '</button>') + '</div>';
+    if (UI.ttEdit === cid) {
+      return html + '<form class="form" data-form="tt-save" novalidate><div id="tt-periods">' + (periods.length ? periods : [null, null, null]).map(ttPeriodHTML).join('') + '</div>' +
+        '<button type="button" class="btn ghost" data-act="tt-row-add">➕ Add period</button>' +
+        field('Note for parents (optional)', '<input name="note" maxlength="200" value="' + esc(tt && tt.note || '') + '" placeholder="e.g. Saturday: half day">') +
+        '<div class="form-actions"><button type="button" class="btn ghost" data-act="tt-cancel">' + esc(t('Cancel')) + '</button><button class="btn primary">' + esc(t('Save')) + '</button></div></form>';
+    }
+    if (!periods.length) return html + emptyState('🗓️', 'No timetable yet', 'Add the weekly timetable for ' + className(cid) + '. Parents see it in the Parents app.', '<button class="btn primary" data-act="tt-edit">✏️ ' + esc(t('Edit timetable')) + '</button>');
+    return html + '<div class="table-wrap"><table class="table tt"><thead><tr><th>Time</th>' + TT_DAYS.map(function (d) { return '<th>' + d + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      periods.map(function (p) { return '<tr><th>' + esc(p.time || '') + '</th>' + TT_DAYS.map(function (d, i) { return '<td>' + esc(asArray(p.cells)[i] || '') + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div>' +
+      (tt.note ? '<p class="note">' + esc(tt.note) + '</p>' : '') + '<p class="muted small">Updated ' + esc(tt.at ? stampIST(tt.at) : '') + (tt.by ? ' by ' + esc(tt.by) : '') + '</p>';
+  }
+
+  /* ---------- exams, marks & report cards ---------- */
+  var DEFAULT_SUBJECTS = {
+    toddlers: ['Rhymes & songs', 'Colours & shapes', 'Motor skills', 'Social skills'],
+    nursery: ['English', 'Telugu', 'Numbers', 'Rhymes', 'Drawing'],
+    lkg: ['English', 'Telugu', 'Hindi', 'Maths', 'EVS', 'Drawing'],
+    ukg: ['English', 'Telugu', 'Hindi', 'Maths', 'EVS', 'Drawing']
+  };
+  function examById(id) { return S.exams.filter(function (e) { return e.id === id; })[0] || null; }
+  function marksOf(examId, sid) { return S.marks.filter(function (m) { return m.examId === examId && m.studentId === sid; })[0] || null; }
+  function academicYear() {
+    var y = String(S.settings.academicYear || '');
+    if (/^\d{4}-\d{2}$/.test(y)) return y;
+    var ym = thisMonth(), yr = +ym.slice(0, 4), start = +ym.slice(5, 7) >= 6 ? yr : yr - 1;
+    return start + '-' + String((start + 1) % 100).padStart(2, '0');
+  }
+  function nextYear(y) { var a = +String(y).slice(0, 4) + 1; return a + '-' + String((a + 1) % 100).padStart(2, '0'); }
+  function gradeOf(pct) { return pct >= 90 ? 'A+' : pct >= 75 ? 'A' : pct >= 60 ? 'B' : pct >= 45 ? 'C' : 'D'; }
+  function examResult(e, m) {
+    var rows = [], tot = 0, max = 0, numeric = true;
+    asArray(e.subjects).forEach(function (sub, i) {
+      var v = m && m.marks ? m.marks[sub.name] : '';
+      v = v == null ? '' : String(v);
+      var mx = num(sub.max), n = parseFloat(v), isNum = mx > 0 && v !== '' && isFinite(n);
+      if (isNum) { tot += n; max += mx; } else if (mx > 0 && v !== '' && !/^ab$/i.test(v)) numeric = false;
+      rows.push({ name: sub.name, value: v, max: mx, grade: isNum ? gradeOf(n / mx * 100) : (mx > 0 ? (/^ab$/i.test(v) ? 'AB' : '') : v) });
+    });
+    return { rows: rows, total: round2(tot), max: max, pct: max > 0 && numeric ? Math.round(tot / max * 1000) / 10 : null };
+  }
+  function viewExams(arg) {
+    if (arg) return viewExam(arg);
+    var cid = b2Class('exClass');
+    if (!cid) return noClassHTML();
+    var list = S.exams.filter(function (e) { return e.classId === cid; }).sort(function (a, b) { return String(a.date || '') < String(b.date || '') ? 1 : -1; });
+    var n = activeStudents(cid).length;
+    var html = '<div class="toolbar">' + classSelectHTML('exClass') + '<button class="btn primary" data-act="exam-add">➕ ' + esc(t('New exam')) + '</button></div>' +
+      '<p class="muted small">' + (isAdmin() ? 'Turn on “Publish” when an exam’s marks are final: parents then see their own child’s report card in the Parents app.' : 'The admin publishes report cards to parents when marks are final.') + '</p>';
+    if (!list.length) return html + emptyState('📝', 'No exams yet', 'Create an exam or term (e.g. “Term 1”) with its subjects, then enter marks or grades.', '<button class="btn primary" data-act="exam-add">➕ ' + esc(t('New exam')) + '</button>');
+    return html + list.map(function (e) {
+      var done = S.marks.filter(function (m) { return m.examId === e.id && Object.keys(asObject(m.marks)).some(function (k) { return String(m.marks[k]) !== ''; }); }).length;
+      return '<article class="card exam"><div class="row between"><div><h3><a href="#/exams/' + encodeURIComponent(e.id) + '">' + esc(e.name) + '</a></h3><small class="muted">' + esc([e.term, e.year, e.date ? fmtDate(e.date) : ''].filter(Boolean).join(' · ')) + '</small></div>' +
+        (e.published ? badge(t('Published'), '#6cc48a') : badge(t('Not published'), '#c9ced6')) + '</div>' +
+        '<p class="small">' + asArray(e.subjects).length + ' subjects · marks entered for <b>' + done + '</b> of ' + n + ' students</p>' +
+        '<div class="row gap wrap"><a class="btn small primary" href="#/exams/' + encodeURIComponent(e.id) + '">✏️ ' + esc(t('Marks')) + '</a><button class="btn small ghost" data-act="rc-print-all" data-id="' + esc(e.id) + '">🖨️ ' + esc(t('Report cards')) + '</button>' +
+        '<button class="btn small ghost" data-act="exam-edit" data-id="' + esc(e.id) + '">' + esc(t('Edit')) + '</button><button class="icon-btn" data-act="exam-del" data-id="' + esc(e.id) + '" title="Delete exam" aria-label="Delete exam">🗑️</button>' +
+        (isAdmin() ? '<label class="switch-row inline"><input type="checkbox" data-change="exam-publish" data-id="' + esc(e.id) + '"' + (e.published ? ' checked' : '') + '><span><b>Publish</b> to parents</span></label>' : '') + '</div></article>';
+    }).join('');
+  }
+  function openExamForm(e) {
+    var cid = e ? e.classId : b2Class('exClass');
+    var subj = e ? asArray(e.subjects).map(function (s) { return s.name + (num(s.max) > 0 ? ' | ' + num(s.max) : ''); }).join('\n') : DEFAULT_SUBJECTS[cid].map(function (s) { return s + ' | 50'; }).join('\n');
+    openModal({
+      title: e ? 'Edit exam' : t('New exam') + ' · ' + className(cid), size: 'wide',
+      body: '<form class="form" novalidate><div class="grid2">' +
+        field('Exam name *', '<input name="name" maxlength="60" value="' + esc(e ? e.name : '') + '" placeholder="e.g. Term 1 assessment" required>') +
+        field('Term', '<input name="term" maxlength="30" value="' + esc(e ? e.term || '' : '') + '" placeholder="Term 1 / Half-yearly / Annual">') +
+        field(t('Date'), '<input type="date" name="date" value="' + esc(e ? e.date || '' : todayISO()) + '">') +
+        field(t('Academic year'), '<input name="year" maxlength="7" value="' + esc(e ? e.year || '' : academicYear()) + '" placeholder="2026-27">') +
+        field(t('Subjects') + ' *', '<textarea name="subjects" rows="6" maxlength="1500">' + esc(subj) + '</textarea>', '<small class="hint">One subject per line. Add “| maximum marks” for marks (e.g. <b>English | 50</b>), or leave it out to enter a grade or a short remark (e.g. <b>Motor skills</b> → A, B, “Good”).</small>', 'span2') +
+        '</div><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">' + esc(t('Cancel')) + '</button><button class="btn primary">' + esc(t('Save')) + '</button></div></form>',
+      onSubmit: function (form, fd) {
+        var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
+        if (!g('name')) { fieldError(form, 'name', 'Enter the exam name'); return false; }
+        var seen = {}, subjects = [];
+        g('subjects').split(/\n+/).forEach(function (line) {
+          var parts = line.split('|'), name = String(parts[0] || '').replace(/\s+/g, ' ').trim().slice(0, 40), mx = Math.max(0, Math.min(1000, parseInt(parts[1], 10) || 0));
+          if (name && !seen[name.toLowerCase()] && subjects.length < 15) { seen[name.toLowerCase()] = 1; subjects.push({ name: name, max: mx }); }
+        });
+        if (!subjects.length) { fieldError(form, 'subjects', 'Add at least one subject'); return false; }
+        if (g('year') && !/^\d{4}-\d{2}$/.test(g('year'))) { fieldError(form, 'year', 'Use the form 2026-27'); return false; }
+        var rec = Object.assign({}, e || { id: 'ex-' + uid(), classId: cid, published: false, createdAt: new Date().toISOString() }, { name: g('name').slice(0, 60), term: g('term').slice(0, 30), date: isISODate(g('date')) ? g('date') : '', year: g('year'), subjects: subjects, by: ME.name });
+        S.exams = S.exams.filter(function (x) { return x.id !== rec.id; }).concat([rec]);
+        persist('exams'); toast(e ? 'Exam updated' : 'Exam created'); render();
+        return true;
+      }
+    });
+  }
+  function viewExam(id) {
+    var e = examById(id);
+    if (!e || (!isAdmin() && e.classId !== ME.classId)) return emptyState('📝', 'Exam not found', 'It may have been deleted.', '<a class="btn primary" href="#/exams">Back to exams</a>');
+    var studs = activeStudents(e.classId);
+    var html = '<div class="toolbar"><a class="btn ghost" href="#/exams">← ' + esc(t('Exams & reports')) + '</a><button class="btn ghost" data-act="rc-print-all" data-id="' + esc(e.id) + '">🖨️ ' + esc(t('Report cards')) + '</button></div>' +
+      '<section class="card"><h2>' + esc(e.name) + ' · ' + esc(className(e.classId)) + '</h2><p class="muted small">' + esc([e.term, e.year, e.date ? fmtDate(e.date) : ''].filter(Boolean).join(' · ')) + ' · ' + (e.published ? '✅ ' + esc(t('Published')) : esc(t('Not published'))) + '</p>' +
+      '<p class="muted small">Enter marks (or <b>AB</b> for absent) where a maximum is set; otherwise a grade or a short word. Tap Save at the bottom.</p></section>';
+    if (!studs.length) return html + emptyState('🧒', 'No students in this class', 'Add students first.');
+    html += '<form class="form" data-form="marks-save" data-id="' + esc(e.id) + '" novalidate>' + studs.map(function (s) {
+      var m = marksOf(e.id, s.id), mk = asObject(m && m.marks);
+      return '<section class="card mk-card"><div class="row between"><h3>' + esc(s.name) + (s.section ? ' <small class="muted">Sec ' + esc(s.section) + '</small>' : '') + '</h3><button type="button" class="btn small ghost" data-act="rc-view" data-exam="' + esc(e.id) + '" data-sid="' + esc(s.id) + '">📄 ' + esc(t('Report card')) + '</button></div><div class="mk-grid">' +
+        asArray(e.subjects).map(function (sub, i) {
+          return field(esc(sub.name) + (num(sub.max) > 0 ? ' <small class="muted">/ ' + num(sub.max) + '</small>' : ''), '<input name="m|' + esc(s.id) + '|' + i + '" maxlength="12" value="' + esc(mk[sub.name] == null ? '' : mk[sub.name]) + '"' + (num(sub.max) > 0 ? ' inputmode="decimal"' : '') + '>');
+        }).join('') + '</div>' + field(t('Remarks'), '<textarea name="r|' + esc(s.id) + '" rows="2" maxlength="600">' + esc(m && m.remarks || '') + '</textarea>') + '</section>';
+    }).join('') + '<div class="form-actions sticky-save"><button class="btn primary">💾 ' + esc(t('Save')) + ' ' + esc(t('Marks')) + '</button></div></form>';
+    return html;
+  }
+  function reportCardHTML(e, s, m) {
+    var st = S.settings, r = examResult(e, m);
+    return '<article class="rc"><header class="rc-head"><img src="assets/logo.jpeg" alt="" width="58" height="58"><div><h1>' + esc(st.schoolName) + '</h1><p>' + esc(st.address || '') + (st.phone ? ' · ' + esc(st.phone) : '') + '</p></div></header>' +
+      '<h2 class="rc-title">Progress Report · ' + esc(e.name) + (e.year ? ' · ' + esc(e.year) : '') + '</h2>' +
+      '<div class="rc-meta"><span>Name: <b>' + esc(s.name) + '</b></span><span>Class: <b>' + esc(classLabel(s)) + '</b></span>' + (s.dob ? '<span>Date of birth: <b>' + esc(fmtDate(s.dob)) + '</b></span>' : '') + (primaryName(s) ? '<span>Parent: <b>' + esc(primaryName(s)) + '</b></span>' : '') + (e.term || e.date ? '<span>' + esc([e.term, e.date ? fmtDate(e.date) : ''].filter(Boolean).join(' · ')) + '</span>' : '') + '</div>' +
+      '<table class="rc-tbl"><thead><tr><th>Subject</th><th>Marks</th><th>Grade</th></tr></thead><tbody>' + r.rows.map(function (x) {
+        return '<tr><td>' + esc(x.name) + '</td><td>' + (x.max > 0 ? esc(x.value === '' ? '—' : x.value) + ' / ' + x.max : '—') + '</td><td><b>' + esc(x.grade || (x.max > 0 ? '' : x.value) || '—') + '</b></td></tr>';
+      }).join('') + (r.max > 0 ? '<tr class="tot"><td>Total</td><td>' + r.total + ' / ' + r.max + '</td><td><b>' + (r.pct != null ? r.pct + '% · ' + gradeOf(r.pct) : '') + '</b></td></tr>' : '') + '</tbody></table>' +
+      '<div class="rc-rem"><b>' + esc(t('Remarks')) + '</b><p>' + esc(m && m.remarks || '—') + '</p></div>' +
+      '<p class="rc-key">Grades: A+ 90%+ · A 75%+ · B 60%+ · C 45%+ · D below 45% · AB absent</p>' +
+      '<div class="slip-sign rc-sign"><div>Class teacher</div><div>Principal</div><div>Parent</div></div></article>';
+  }
+  function reportCardText(e, s, m) {
+    var r = examResult(e, m);
+    return '📄 ' + S.settings.schoolName + ' – Progress report\n' + s.name + ' (' + classLabel(s) + ')\n' + e.name + (e.year ? ' · ' + e.year : '') + '\n\n' +
+      r.rows.map(function (x) { return x.name + ': ' + (x.max > 0 ? (x.value === '' ? '—' : x.value) + '/' + x.max + (x.grade ? ' (' + x.grade + ')' : '') : (x.value || '—')); }).join('\n') +
+      (r.max > 0 ? '\nTotal: ' + r.total + '/' + r.max + (r.pct != null ? ' (' + r.pct + '%)' : '') : '') + (m && m.remarks ? '\n\nRemarks: ' + m.remarks : '') + '\n\n– ' + S.settings.schoolName;
+  }
+  function openReportCard(examId, sid) {
+    var e = examById(examId), s = studentById(sid);
+    if (!e || !s) return;
+    var m = marksOf(e.id, s.id), phone = s.whatsapp || primaryPhone(s);
+    openModal({ title: t('Report card') + ' · ' + s.name, size: 'wide', body: '<div class="rc-preview">' + reportCardHTML(e, s, m) + '</div><div class="form-actions"><button class="btn ghost" data-act="rc-wa" data-exam="' + esc(e.id) + '" data-sid="' + esc(s.id) + '"' + (phone ? '' : ' disabled title="No parent phone"') + '>💬 WhatsApp</button><button class="btn primary" data-act="rc-print" data-exam="' + esc(e.id) + '" data-sid="' + esc(s.id) + '">🖨️ ' + esc(t('Print / PDF')) + '</button></div>' });
+  }
+  function printReportCards(e, sids) {
+    var inner = sids.map(function (sid) { var s = studentById(sid); return s ? reportCardHTML(e, s, marksOf(e.id, s.id)) : ''; }).join('');
+    if (!inner) { toast('No students to print', 'err'); return; }
+    printSheet(inner, 'Report cards - ' + e.name + ' - ' + className(e.classId), 'rc-print');
+  }
+
+  /* ---------- admission documents (admin only, private bucket) ---------- */
+  var DOC_TYPES = ['Aadhaar', 'Birth certificate', 'Vaccination record', 'Photo', 'Previous school TC', 'Address proof', 'Other'];
+  function docsOf(sid) { return S.student_docs.filter(function (d) { return d.studentId === sid; }).sort(function (a, b) { return String(a.at || '') < String(b.at || '') ? 1 : -1; }); }
+  function docsHTML(s) {
+    var list = docsOf(s.id);
+    return '<h4>📎 ' + esc(t('Admission documents')) + '</h4>' + (list.length ? '<ul class="mini-list">' + list.map(function (d) {
+      return '<li><span><b>' + esc(d.type) + '</b><small>' + esc(d.name || '') + ' · ' + (d.size ? Math.max(1, Math.round(d.size / 1024)) + ' KB · ' : '') + esc(d.at ? fmtDate(d.at.slice(0, 10)) : '') + '</small></span><span class="row gap"><button type="button" class="btn small ghost" data-act="doc-view" data-id="' + esc(d.id) + '">' + esc(t('View')) + '</button><button type="button" class="icon-btn" data-act="doc-del" data-id="' + esc(d.id) + '" title="Delete document" aria-label="Delete document">🗑️</button></span></li>';
+    }).join('') + '</ul>' : '<p class="muted small">No documents yet. Only the admin can see these (not teachers or parents).</p>') +
+      '<form class="form doc-up" data-form="doc-upload" data-id="' + esc(s.id) + '" novalidate><div class="grid2">' + field('Document type', '<select name="type">' + options(DOC_TYPES, 'Aadhaar') + '</select>') +
+      field('File (PDF or photo, max 10 MB)', '<input type="file" name="file" accept="application/pdf,image/jpeg,image/png,image/webp">') + '</div><button class="btn small primary">⬆️ ' + esc(t('Upload')) + '</button></form>';
+  }
+  function refreshDocs(sid) { var b = document.getElementById('student-docs-box'), s = studentById(sid); if (b && s) b.innerHTML = docsHTML(s); }
+
+  /* ---------- transport ---------- */
+  function vanById(id) { return S.vans.filter(function (v) { return v.id === id; })[0] || null; }
+  function vanStudents(vid) { return S.students.filter(function (s) { return s.vanId === vid && !isInactive(s); }).sort(byName); }
+  function viewTransport() {
+    var vans = S.vans.slice().sort(byName);
+    var html = '<div class="toolbar"><button class="btn primary" data-act="van-add">➕ ' + esc(t('Add van')) + '</button>' + (vans.length ? '<button class="btn ghost" data-act="van-print">🖨️ ' + esc(t('Print van list')) + '</button>' : '') + '</div>' +
+      '<p class="muted small">The van fee is added to a child’s monthly dues as a separate line (from the chosen month), with the same late-fee rule. Saved payments are never changed.</p>';
+    if (!vans.length) return html + emptyState('🚐', 'No vans yet', 'Add each van or route with the driver’s name and phone, then assign students.', '<button class="btn primary" data-act="van-add">➕ ' + esc(t('Add van')) + '</button>');
+    return html + vans.map(function (v) {
+      var st = vanStudents(v.id), fees = st.reduce(function (a, s) { return a + vanMonth(s, thisMonth()); }, 0);
+      return '<article class="card van"><div class="row between"><h3>🚐 ' + esc(v.name) + '</h3><span class="row gap"><button class="icon-btn" data-act="van-edit" data-id="' + esc(v.id) + '" title="Edit" aria-label="Edit">✏️</button><button class="icon-btn" data-act="van-del" data-id="' + esc(v.id) + '" title="Delete" aria-label="Delete">🗑️</button></span></div>' +
+        (v.route ? '<p class="small">🛣️ ' + esc(v.route) + '</p>' : '') +
+        '<div class="kvs"><div class="kv"><span>Driver</span><b>' + esc(v.driver || '—') + '</b></div><div class="kv"><span>Driver’s phone</span><b>' + phoneLinks(v.driverPhone) + '</b></div>' + (v.vehicleNo ? '<div class="kv"><span>Vehicle no.</span><b>' + esc(v.vehicleNo) + '</b></div>' : '') +
+        '<div class="kv"><span>Students</span><b>' + st.length + '</b></div><div class="kv"><span>Van fees (' + esc(fmtMonth(thisMonth())) + ')</span><b>' + inr(fees) + '</b></div></div>' +
+        (st.length ? '<p class="small muted">' + st.map(function (s) { return esc(s.name); }).join(', ') + '</p>' : '') +
+        '<button class="btn small primary" data-act="van-students" data-id="' + esc(v.id) + '">🧒 Assign students</button></article>';
+    }).join('');
+  }
+  function openVanForm(v) {
+    openModal({
+      title: v ? 'Edit van' : t('Add van'), size: 'wide',
+      body: '<form class="form" novalidate><div class="grid2">' + field('Van / route name *', '<input name="name" maxlength="50" value="' + esc(v ? v.name : '') + '" placeholder="Van 1 – Vuyyuru town" required>') +
+        field('Vehicle no.', '<input name="vehicleNo" maxlength="20" value="' + esc(v ? v.vehicleNo || '' : '') + '">') +
+        field('Driver name', '<input name="driver" maxlength="50" value="' + esc(v ? v.driver || '' : '') + '">') +
+        field('Driver’s mobile', '<input name="driverPhone" type="tel" inputmode="tel" maxlength="15" value="' + esc(v ? v.driverPhone || '' : '') + '">') +
+        field('Route / stops', '<textarea name="route" rows="2" maxlength="300">' + esc(v ? v.route || '' : '') + '</textarea>', '', 'span2') +
+        field('Default van fee per month (₹)', '<input type="number" name="fee" min="0" max="100000" step="1" inputmode="numeric" value="' + esc(v ? v.fee || '' : '') + '">', '<small class="hint">Suggested when you assign a student; each child can have their own amount.</small>') +
+        '</div><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">' + esc(t('Cancel')) + '</button><button class="btn primary">' + esc(t('Save')) + '</button></div></form>',
+      onSubmit: function (form, fd) {
+        var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
+        if (!g('name')) { fieldError(form, 'name', 'Enter a name for the van'); return false; }
+        if (g('driverPhone') && !validPhone(g('driverPhone'))) { fieldError(form, 'driverPhone', 'Enter a 10-digit mobile number'); return false; }
+        var rec = Object.assign({}, v || { id: 'van-' + uid() }, { name: g('name'), vehicleNo: g('vehicleNo'), driver: g('driver'), driverPhone: g('driverPhone') ? normPhone(g('driverPhone')) : '', route: g('route'), fee: Math.max(0, num(g('fee'))) });
+        S.vans = S.vans.filter(function (x) { return x.id !== rec.id; }).concat([rec]);
+        persist('vans'); toast('Van saved'); render(); return true;
+      }
+    });
+  }
+  function openVanStudents(v) {
+    var studs = activeStudents();
+    var body = '<form class="form" novalidate><input class="search" data-input="kid-filter" placeholder="Search students" aria-label="Search students"><div class="kid-picker van-pick">' + CLASSES.map(function (c) {
+      var l = studs.filter(function (s) { return s.classId === c.id; });
+      if (!l.length) return '';
+      return '<h4>' + c.emoji + ' ' + esc(c.name) + '</h4>' + l.map(function (s) {
+        var on = s.vanId === v.id, other = s.vanId && s.vanId !== v.id ? vanById(s.vanId) : null;
+        return '<div class="kid-opt van-row" data-name="' + esc(String(s.name || '').toLowerCase()) + '"><label class="check"><input type="checkbox" name="on" value="' + esc(s.id) + '"' + (on ? ' checked' : '') + '> <b>' + esc(s.name) + '</b>' + (other ? ' <small class="muted">(now in ' + esc(other.name) + ')</small>' : '') + '</label>' +
+          '<span class="van-fee"><input type="number" name="fee|' + esc(s.id) + '" min="0" max="100000" step="1" inputmode="numeric" aria-label="Van fee for ' + esc(s.name) + '" value="' + esc(on ? num(s.vanFee) : (v.fee || '')) + '"><input type="month" name="from|' + esc(s.id) + '" aria-label="Van from month" value="' + esc(on && isMonth(s.vanFrom) ? s.vanFrom : thisMonth()) + '"></span></div>';
+      }).join('');
+    }).join('') + '</div><p class="muted small">Fee per month (₹) and the month the van starts. Untick to stop the van from this month; earlier months keep their van fee.</p><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">' + esc(t('Cancel')) + '</button><button class="btn primary">' + esc(t('Save')) + '</button></div></form>';
+    openModal({
+      title: '🧒 ' + v.name, size: 'wide', body: body,
+      onSubmit: function (form, fd) {
+        var on = fd.getAll('on').map(String), last = addMonths(thisMonth(), -1), n = 0;
+        S.students.forEach(function (s) {
+          if (on.indexOf(s.id) >= 0) {
+            var fee = Math.max(0, num(fd.get('fee|' + s.id))), from = String(fd.get('from|' + s.id) || '');
+            if (!isMonth(from)) from = thisMonth();
+            if (s.vanId !== v.id || num(s.vanFee) !== fee || s.vanFrom !== from || s.vanTo) { s.vanId = v.id; s.vanFee = fee; s.vanFrom = from; s.vanTo = ''; n++; }
+          } else if (s.vanId === v.id) {
+            s.vanId = '';
+            if (isMonth(s.vanFrom) && s.vanFrom <= last && num(s.vanFee) > 0) s.vanTo = last; else { s.vanFee = 0; s.vanFrom = ''; s.vanTo = ''; }
+            n++;
+          }
+        });
+        persist('students'); toast(n ? n + ' student' + (n === 1 ? '' : 's') + ' updated' : 'No changes'); render(); return true;
+      }
+    });
+  }
+  function printVanList() {
+    var inner = S.vans.slice().sort(byName).map(function (v) {
+      var st = vanStudents(v.id);
+      return '<section class="card"><h3>🚐 ' + esc(v.name) + (v.vehicleNo ? ' · ' + esc(v.vehicleNo) : '') + '</h3><p>Driver: <b>' + esc(v.driver || '—') + '</b>' + (v.driverPhone ? ' · ' + esc(v.driverPhone) : '') + (v.route ? '<br>Route: ' + esc(v.route) : '') + '</p>' +
+        (st.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Student</th><th>Class</th><th>Parent</th><th>Phone</th><th>Address</th></tr></thead><tbody>' + st.map(function (s, i) {
+          return '<tr><td>' + (i + 1) + '</td><td>' + esc(s.name) + '</td><td>' + esc(classLabel(s)) + '</td><td>' + esc(primaryName(s)) + '</td><td>' + esc(primaryPhone(s)) + '</td><td>' + esc(s.address || '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>' : '<p class="muted">No students assigned.</p>') + '</section>';
+    }).join('');
+    printDoc('Van list', '<div class="pdoc-body">' + inner + '</div>', 'Little Wings van list');
+  }
+
+  /* ---------- ID cards & transfer certificate ---------- */
+  function idCardHTML(s, photoUrl) {
+    var st = S.settings, c = CLASS_BY_ID[s.classId] || {};
+    return '<div class="idc" style="--c:' + esc(c.color || '#38a8e0') + '"><div class="idc-top"><img src="assets/logo.jpeg" alt=""><div><b>' + esc(st.schoolName) + '</b><small>Student ID card · ' + esc(academicYear()) + '</small></div></div>' +
+      '<div class="idc-body"><div class="idc-photo">' + (photoUrl ? '<img src="' + esc(photoUrl) + '" alt="">' : '<span>' + esc(initials(s.name)) + '</span>') + '</div><div class="idc-info"><b class="idc-name">' + esc(s.name) + '</b>' +
+      '<span>Class: <b>' + esc(className(s.classId)) + (s.section ? ' – ' + esc(s.section) : '') + '</b></span>' + (s.dob ? '<span>DOB: ' + esc(fmtDate(s.dob)) + '</span>' : '') +
+      (primaryName(s) ? '<span>Parent: ' + esc(primaryName(s)) + '</span>' : '') + (primaryPhone(s) ? '<span>📞 ' + esc(primaryPhone(s)) + '</span>' : '') + '</div></div>' +
+      '<div class="idc-foot">' + esc(st.address || '') + (st.phone ? ' · ' + esc(st.phone) : '') + '</div></div>';
+  }
+  function viewIdCards() {
+    if (!UI.idClass) UI.idClass = 'all';
+    var studs = activeStudents(UI.idClass === 'all' ? '' : UI.idClass);
+    var left = S.students.filter(function (s) { return s.status === 'Left' && (UI.idClass === 'all' || s.classId === UI.idClass); }).sort(byName);
+    var html = '<div class="toolbar">' + classSelectHTML('idClass', 'All classes') + '</div>';
+    html += '<section class="card"><h2>🪪 Student ID cards</h2><p class="muted small">8 cards per A4 sheet (85.6 × 54 mm). Choose “Save as PDF” in the print window for a PDF.</p>' +
+      (studs.length ? '<form data-form="id-print" novalidate><label class="check"><input type="checkbox" data-act="id-all" checked> <b>Select all (' + studs.length + ')</b></label><div class="kid-picker id-pick">' + studs.map(function (s) {
+        return '<label class="check kid-opt"><input type="checkbox" name="sid" value="' + esc(s.id) + '" checked> ' + esc(s.name) + ' <small class="muted">' + esc(classLabel(s)) + '</small>' + (photoPathOf(s) ? '' : ' <small class="warn-t">no photo</small>') + '</label>';
+      }).join('') + '</div><button class="btn primary">🖨️ ' + esc(t('Print ID cards')) + '</button></form>' : '<p class="muted">No active students.</p>') + '</section>';
+    html += '<section class="card"><h2>📜 ' + esc(t('Transfer certificate')) + '</h2><p class="muted small">Issuing a TC sets the student to “Left” (or Inactive) with the leaving date. Their attendance, fees and receipts stay in the records.</p>' +
+      (studs.length ? '<ul class="mini-list">' + studs.map(function (s) { return '<li><span><b>' + esc(s.name) + '</b><small>' + esc(classLabel(s)) + '</small></span><button class="btn small ghost" data-act="tc-new" data-id="' + esc(s.id) + '">📜 Issue TC</button></li>'; }).join('') + '</ul>' : '') +
+      (left.length ? '<h4>Left</h4><ul class="mini-list">' + left.map(function (s) { return '<li><span><b>' + esc(s.name) + '</b><small>' + esc(classLabel(s)) + (s.leavingDate ? ' · left ' + esc(fmtDate(s.leavingDate)) : '') + (s.tc && s.tc.no ? ' · ' + esc(s.tc.no) : '') + '</small></span>' + (s.tc && s.tc.no ? '<button class="btn small ghost" data-act="tc-print" data-id="' + esc(s.id) + '">🖨️ Reprint TC</button>' : '<button class="btn small ghost" data-act="tc-new" data-id="' + esc(s.id) + '">📜 Issue TC</button>') + '</li>'; }).join('') + '</ul>' : '') + '</section>';
+    return html;
+  }
+  function printIdCards(ids) {
+    var list = ids.map(studentById).filter(Boolean);
+    if (!list.length) { toast('Choose at least one student', 'err'); return; }
+    toast('Preparing ' + list.length + ' ID card' + (list.length === 1 ? '' : 's') + '…');
+    Promise.all(list.map(function (s) { var p = photoPathOf(s); return p ? studentPhotoURL(p) : Promise.resolve(''); })).then(function (urls) {
+      var pages = [];
+      for (var i = 0; i < list.length; i += 8) pages.push('<div class="idsheet-page">' + list.slice(i, i + 8).map(function (s, j) { return idCardHTML(s, urls[i + j]); }).join('') + '</div>');
+      printSheet(pages.join(''), 'Little Wings ID cards', 'idsheet');
+    });
+  }
+  function tcHTML(s) {
+    var tc = s.tc || {}, row = function (k, v) { return '<tr><th>' + k + '</th><td>' + v + '</td></tr>'; };
+    return '<div class="tc"><div class="tc-no"><span>TC No: <b>' + esc(tc.no || '') + '</b></span><span>Date of issue: <b>' + esc(fmtDate(tc.issued || todayISO())) + '</b></span></div><table class="slip-tbl tc-tbl">' +
+      row('Name of the pupil', '<b>' + esc(s.name) + '</b>') + row('Father’s / Mother’s / Guardian’s name', esc([s.fatherName, s.motherName, s.guardianName].filter(Boolean).join(' / ') || primaryName(s) || '—')) +
+      row('Date of birth', esc(fmtDate(s.dob)) + (isISODate(s.dob) ? ' <small>(' + esc(new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(s.dob + 'T12:00:00'))) + ')</small>' : '')) +
+      row('Date of admission', esc(fmtDate(s.admissionDate))) + row('Class at the time of leaving', esc(tc.classAt || classLabel(s))) + row('Date of leaving', esc(fmtDate(tc.leavingDate || s.leavingDate))) +
+      row('Reason for leaving', esc(tc.reason || '—')) + row('Conduct', esc(tc.conduct || 'Good')) + row('Fee dues', esc(tc.dues > 0 ? 'Pending ' + inr(tc.dues) : 'No dues')) +
+      (tc.remarks ? row('Remarks', esc(tc.remarks)) : '') + '</table><p class="tc-cert">Certified that the above particulars are correct as per the school records.</p><div class="slip-sign"><div>Class teacher</div><div>Principal / Head (with seal)</div></div></div>';
+  }
+  function openTCForm(s) {
+    var reasons = ['Parent’s request', 'Shifting to another place', 'Joining another school', 'Completed UKG', 'Other'];
+    openModal({
+      title: t('Transfer certificate') + ' · ' + s.name, size: 'wide',
+      body: '<form class="form" novalidate><div class="grid2">' + field('Date of leaving *', '<input type="date" name="leavingDate" value="' + esc(s.leavingDate || todayISO()) + '" required>') +
+        field('Status after leaving', '<select name="status">' + options([{ value: 'Left', label: 'Left' }, { value: 'Inactive', label: 'Inactive' }], 'Left') + '</select>') +
+        field('Reason', '<select name="reason">' + options(reasons, reasons[0]) + '</select>') + field('Conduct', '<input name="conduct" maxlength="40" value="Good">') +
+        field('Class at the time of leaving', '<input name="classAt" maxlength="40" value="' + esc(classLabel(s)) + '">') + field('Remarks', '<input name="remarks" maxlength="200">') +
+        '</div><p class="note">Fee dues now: <b>' + inr(outstanding(s)) + '</b> (printed on the TC).</p><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">' + esc(t('Cancel')) + '</button><button class="btn primary">📜 Save &amp; print TC</button></div></form>',
+      onSubmit: function (form, fd) {
+        var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
+        if (!isISODate(g('leavingDate'))) { fieldError(form, 'leavingDate', 'Choose the leaving date'); return false; }
+        var seq = Math.max(1, parseInt(S.settings.tcSeq, 10) || 1);
+        var used = {}; S.students.forEach(function (x) { if (x.tc && x.tc.no) used[x.tc.no] = 1; });
+        var no = 'TC-' + String(seq).padStart(4, '0');
+        while (used[no]) { seq++; no = 'TC-' + String(seq).padStart(4, '0'); }
+        s.tc = { no: no, issued: todayISO(), leavingDate: g('leavingDate'), reason: g('reason'), conduct: g('conduct') || 'Good', classAt: g('classAt'), remarks: g('remarks'), dues: round2(outstanding(s)), by: ME.name };
+        s.status = g('status') === 'Inactive' ? 'Inactive' : 'Left';
+        s.leavingDate = g('leavingDate');
+        S.settings.tcSeq = seq + 1;
+        persist('students', 'settings');
+        toast('TC ' + no + ' saved · ' + s.name + ' marked ' + s.status);
+        render();
+        setTimeout(function () { printDoc('Transfer Certificate', tcHTML(s), 'TC ' + no + ' - ' + s.name); }, 0);
+        return true;
+      }
+    });
+  }
+
+  /* ---------- year-end promotion (with undo) ---------- */
+  var NEXT_CLASS = { toddlers: 'nursery', nursery: 'lkg', lkg: 'ukg', ukg: 'left' };
+  function lastPromotion() { return S.promotions.filter(function (p) { return !p.undone && Array.isArray(p.items) && p.at; }).sort(function (a, b) { return String(a.at) < String(b.at) ? 1 : -1; })[0] || null; }
+  function viewPromotion() {
+    var yr = academicYear(), studs = activeStudents(), lp = lastPromotion();
+    var mFrom = (+thisMonth().slice(5, 7) >= 4 ? thisMonth().slice(0, 4) : String(+thisMonth().slice(0, 4))) + '-06';
+    if (mFrom < thisMonth()) mFrom = thisMonth();
+    var html = '<section class="card"><h2>🎓 ' + esc(t('Promotion')) + '</h2><p>' + esc(t('Academic year')) + ' now: <b>' + esc(yr) + '</b></p><p class="muted small">Moves the chosen students to the next class for the new academic year. Attendance, payments and receipts are kept. Earlier months keep their old fee (saved as fee history), so past dues are not re-priced. You can undo the last promotion.</p></section>';
+    if (lp) html += '<div class="callout"><b>Last promotion</b><p>' + esc(stampIST(lp.at)) + ' · ' + lp.items.length + ' student' + (lp.items.length === 1 ? '' : 's') + ' · ' + esc(lp.fromYear) + ' → ' + esc(lp.toYear) + ' · by ' + esc(lp.by || '') + '</p><button class="btn ghost" data-act="promo-undo">↩️ ' + esc(t('Undo last promotion')) + '</button></div>';
+    if (!studs.length) return html + emptyState('🧒', 'No active students', 'There is nobody to promote.');
+    html += '<form class="form" data-form="promo-run" novalidate><section class="card"><div class="grid2">' +
+      field('New academic year *', '<input name="toYear" maxlength="7" value="' + esc(nextYear(yr)) + '" placeholder="2027-28">') +
+      field('New class & fees from month *', '<input type="month" name="fromMonth" value="' + esc(mFrom) + '">', '<small class="hint">Months before this keep the old class fee.</small>') + '</div>' +
+      '<label class="switch-row"><input type="radio" name="feeMode" value="carry" checked><span><b>Carry over each child’s current fee</b></span></label>' +
+      '<label class="switch-row"><input type="radio" name="feeMode" value="new"><span><b>Set a new yearly fee for each class</b><br><small class="muted">Only for promoted students; blank = keep their fee.</small></span></label>' +
+      '<div class="grid2 sub-fields">' + CLASSES.map(function (c) { return field(c.emoji + ' ' + esc(c.name) + ' – yearly fee (₹)', '<input type="number" name="fee|' + c.id + '" min="0" max="1000000" step="1" inputmode="numeric">'); }).join('') + '</div></section>' +
+      '<section class="card"><div class="row between"><h3>Students (' + studs.length + ')</h3><label class="check"><input type="checkbox" data-act="promo-all" checked> Select all</label></div><div class="promo-list">' + studs.slice().sort(function (a, b) { return CLASSES.indexOf(CLASS_BY_ID[a.classId]) - CLASSES.indexOf(CLASS_BY_ID[b.classId]) || byName(a, b); }).map(function (s) {
+        var nx = NEXT_CLASS[s.classId];
+        return '<div class="promo-row"><label class="check"><input type="checkbox" name="sid" value="' + esc(s.id) + '" checked> <b>' + esc(s.name) + '</b></label><span class="promo-to"><small class="muted">' + esc(className(s.classId)) + ' →</small><select name="to|' + esc(s.id) + '" aria-label="New class for ' + esc(s.name) + '">' +
+          options(CLASSES.map(function (c) { return { value: c.id, label: c.name }; }).concat([{ value: 'left', label: '🎓 Leaves (Left)' }]), nx) + '</select></span></div>';
+      }).join('') + '</div></section><div class="form-actions sticky-save"><button class="btn primary">👀 Preview &amp; ' + esc(t('Promote students')) + '</button></div></form>';
+    return html;
+  }
+  function runPromotion(f, fd) {
+    var toYear = String(fd.get('toYear') || '').trim(), fromMonth = String(fd.get('fromMonth') || ''), mode = fd.get('feeMode') === 'new' ? 'new' : 'carry';
+    if (!/^\d{4}-\d{2}$/.test(toYear)) return fieldError(f, 'toYear', 'Use the form 2027-28');
+    if (!isMonth(fromMonth)) return fieldError(f, 'fromMonth', 'Choose the month');
+    var newFee = {}; CLASSES.forEach(function (c) { var v = String(fd.get('fee|' + c.id) || '').trim(); if (v !== '' && num(v) >= 0) newFee[c.id] = num(v); });
+    var plan = fd.getAll('sid').map(String).map(function (id) { var s = studentById(id); var to = String(fd.get('to|' + id) || ''); return s && (CLASS_BY_ID[to] || to === 'left') ? { s: s, to: to } : null; }).filter(Boolean);
+    if (!plan.length) { toast('Choose at least one student', 'err'); return; }
+    var counts = {};
+    plan.forEach(function (x) { var k = className(x.s.classId) + ' → ' + (x.to === 'left' ? 'Left' : className(x.to)); counts[k] = (counts[k] || 0) + 1; });
+    var summary = Object.keys(counts).map(function (k) { return k + ': ' + counts[k]; }).join(' · ');
+    return confirmBox(plan.length + ' students → ' + toYear + '. ' + summary + '. Fees: ' + (mode === 'carry' ? 'carry over' : 'new yearly fee where set') + ', from ' + fmtMonth(fromMonth) + '. You can undo this afterwards.', { ok: t('Promote students'), danger: false, title: 'Preview' }).then(function (ok) {
+      if (!ok) return;
+      var fromYear = academicYear(), until = addMonths(fromMonth, -1);
+      var batch = { id: 'pr-' + uid(), at: new Date().toISOString(), by: ME.name, fromYear: fromYear, toYear: toYear, fromMonth: fromMonth, feeMode: mode, items: [] };
+      plan.forEach(function (x) {
+        var s = x.s;
+        batch.items.push({ studentId: s.id, to: x.to, prev: { classId: s.classId, status: s.status || 'Active', academicYear: s.academicYear || '', leavingDate: s.leavingDate || '', monthlyFee: num(s.monthlyFee), yearlyFee: num(s.yearlyFee), feeHist: JSON.parse(JSON.stringify(asArray(s.feeHist))) } });
+        if (x.to === 'left') { s.status = 'Left'; s.leavingDate = s.leavingDate || addDays(fromMonth + '-01', -1); return; }
+        var hist = asArray(s.feeHist).filter(function (h) { return h.until !== until; });
+        hist.push({ until: until, monthly: num(s.monthlyFee), yearly: num(s.yearlyFee), classId: s.classId });
+        s.feeHist = hist.sort(function (a, b) { return a.until < b.until ? -1 : 1; }).slice(-20);
+        s.classId = x.to; s.academicYear = toYear;
+        if (mode === 'new' && newFee[x.to] != null) { s.yearlyFee = newFee[x.to]; if (x.to !== 'nursery') s.monthlyFee = 0; }
+      });
+      S.promotions.push(batch);
+      S.settings.academicYear = toYear;
+      persist('students', 'promotions', 'settings');
+      toast('🎓 ' + plan.length + ' students promoted to ' + toYear);
+      render();
+    });
+  }
+  function undoPromotion() {
+    var lp = lastPromotion();
+    if (!lp) return;
+    confirmBox('Undo the promotion of ' + lp.items.length + ' students (' + lp.fromYear + ' → ' + lp.toYear + ')? Their class, status and fees go back to how they were before it.', { ok: 'Undo', danger: false, title: t('Undo last promotion') }).then(function (ok) {
+      if (!ok) return;
+      var n = 0;
+      lp.items.forEach(function (it) {
+        var s = studentById(it.studentId), p = it.prev;
+        if (!s || !p) return;
+        s.classId = p.classId; s.status = p.status || 'Active'; s.academicYear = p.academicYear;
+        if (p.leavingDate) s.leavingDate = p.leavingDate; else delete s.leavingDate;
+        s.monthlyFee = p.monthlyFee; s.yearlyFee = p.yearlyFee; s.feeHist = p.feeHist;
+        n++;
+      });
+      lp.undone = true; lp.undoneAt = new Date().toISOString();
+      S.settings.academicYear = lp.fromYear;
+      persist('students', 'promotions', 'settings');
+      toast('Promotion undone for ' + n + ' students'); render();
+    });
+  }
+
+  /* ---------- parent messages (feedback inbox) ---------- */
+  function fbById(id) { return S.feedback.filter(function (f) { return f.id === id; })[0] || null; }
+  function fbStatusLabel(s) { return s === 'Replied' ? t('Replied') : s === 'Seen' ? t('Seen') : t('New'); }
+  function viewFeedback() {
+    if (!UI.fbFilter) UI.fbFilter = 'New';
+    var all = S.feedback.slice().sort(function (a, b) { return String(a.createdAt || '') < String(b.createdAt || '') ? 1 : -1; });
+    var nNew = all.filter(function (f) { return (f.status || 'New') === 'New'; }).length;
+    var list = UI.fbFilter === 'New' ? all.filter(function (f) { return (f.status || 'New') === 'New'; }) : all;
+    var html = '<div class="seg-tabs"><button type="button" class="' + (UI.fbFilter === 'New' ? 'active' : '') + '" data-act="fb-filter" data-f="New">' + esc(t('New')) + ' (' + nNew + ')</button><button type="button" class="' + (UI.fbFilter === 'All' ? 'active' : '') + '" data-act="fb-filter" data-f="All">' + esc(t('All')) + ' (' + all.length + ')</button></div>' +
+      '<p class="muted small">Parents send these from the Parents app (up to 5 a day each). They see the status and your reply note.</p>';
+    if (!list.length) return html + emptyState('💬', UI.fbFilter === 'New' ? 'No new messages' : 'No messages yet', 'Messages from parents will appear here.');
+    return html + list.map(function (f) {
+      var st = f.status || 'New', col = st === 'Replied' ? '#6cc48a' : st === 'Seen' ? '#ffc93c' : '#38a8e0';
+      return '<article class="card fb' + (st === 'New' ? ' is-new' : '') + '"><div class="row between"><div><b>' + esc(f.parentName || 'Parent') + '</b> <small class="muted">· ' + esc(f.studentName || '') + '</small><br><small class="muted">' + esc(f.createdAt ? stampIST(f.createdAt) : '') + '</small></div>' + badge(fbStatusLabel(st), col) + '</div>' +
+        '<p class="pre">' + esc(f.message || '') + '</p>' + (f.reply ? '<div class="callout"><b>Your reply</b><p class="pre">' + esc(f.reply) + '</p><small class="muted">' + esc(f.repliedAt ? stampIST(f.repliedAt) : '') + '</small></div>' : '') +
+        '<div class="row gap wrap">' + (st === 'New' ? '<button class="btn small ghost" data-act="fb-seen" data-id="' + esc(f.id) + '">👁️ ' + esc(t('Mark seen')) + '</button>' : '') + '<button class="btn small primary" data-act="fb-reply" data-id="' + esc(f.id) + '">↩️ ' + esc(t('Reply')) + '</button>' +
+        '<button class="icon-btn" data-act="fb-del" data-id="' + esc(f.id) + '" title="Delete" aria-label="Delete">🗑️</button></div></article>';
+    }).join('');
+  }
+
+  /* ---------- audit log (admin, read straight from the database) ---------- */
+  var AUDIT_TABLES = [{ value: '', label: 'All tables' }, { value: 'students', label: 'Students' }, { value: 'student_fees', label: 'Student fees' }, { value: 'payments', label: 'Payments' }, { value: 'settings', label: 'Settings' }];
+  function viewAudit() {
+    var a = UI.audit || (UI.audit = { tbl: '', action: '', from: addDays(todayISO(), -30), to: todayISO(), q: '' });
+    setTimeout(loadAudit, 0);
+    return '<form class="form" data-form="audit-filter" novalidate><div class="toolbar audit-f">' +
+      field('Table', '<select name="tbl">' + options(AUDIT_TABLES, a.tbl) + '</select>') +
+      field('Change', '<select name="action">' + options([{ value: '', label: 'All' }, { value: 'insert', label: 'Added' }, { value: 'update', label: 'Changed' }, { value: 'delete', label: 'Deleted' }], a.action) + '</select>') +
+      field('From', '<input type="date" name="from" value="' + esc(a.from) + '">') + field('To', '<input type="date" name="to" value="' + esc(a.to) + '">') +
+      field('Search (user or change)', '<input name="q" maxlength="40" value="' + esc(a.q) + '">') + '<button class="btn primary">🔍 Filter</button></div></form>' +
+      '<p class="muted small">Every change to students, fees, payments and settings is recorded by the database itself (who, when, what changed). Passwords and keys are never recorded. Only the admin can read this.</p><div id="audit-list"><p class="muted">Loading…</p></div>';
+  }
+  function auditRecName(r) {
+    if (r.tbl === 'students' || r.tbl === 'student_fees') { var s = studentById(r.rec); return s ? s.name : r.rec; }
+    if (r.tbl === 'payments') { var p = findPayment(r.rec); return p ? p.receiptNo + ' · ' + p.studentName : r.rec; }
+    return r.tbl === 'settings' ? 'School settings' : r.rec;
+  }
+  function loadAudit() {
+    var box = document.getElementById('audit-list'), a = UI.audit;
+    if (!box || !SB || !a) return;
+    var q = SB.from('audit_log').select('id,at,user_name,user_role,tbl,rec,action,summary').order('at', { ascending: false }).limit(300);
+    if (a.tbl) q = q.eq('tbl', a.tbl);
+    if (a.action) q = q.eq('action', a.action);
+    if (isISODate(a.from)) q = q.gte('at', a.from + 'T00:00:00+05:30');
+    if (isISODate(a.to)) q = q.lte('at', a.to + 'T23:59:59+05:30');
+    var s = String(a.q || '').replace(/[%_,()*\\]/g, ' ').trim();
+    if (s) q = q.or('user_name.ilike.%' + s + '%,summary.ilike.%' + s + '%,rec.ilike.%' + s + '%');
+    q.then(function (r) {
+      if (!document.getElementById('audit-list')) return;
+      if (r.error) { box.innerHTML = '<p class="note warn">Could not load the log: ' + esc(r.error.message) + '</p>'; return; }
+      var rows = r.data || [];
+      var ACT = { insert: ['Added', '#6cc48a'], update: ['Changed', '#38a8e0'], delete: ['Deleted', '#ff7a6b'] };
+      box.innerHTML = rows.length ? '<p class="muted small">' + rows.length + (rows.length === 300 ? '+ (newest 300)' : '') + ' changes</p><ul class="audit-list">' + rows.map(function (x) {
+        var ac = ACT[x.action] || [x.action, '#9aa7b4'];
+        return '<li><div class="row between"><span>' + badge(ac[0], ac[1]) + ' <b>' + esc(x.tbl) + '</b> · ' + esc(auditRecName(x)) + '</span><small class="muted">' + esc(stampIST(x.at)) + '</small></div><small class="muted">by ' + esc(x.user_name || 'system') + (x.user_role ? ' (' + esc(x.user_role) + ')' : '') + '</small>' + (x.summary ? '<p class="audit-sum">' + esc(x.summary) + '</p>' : '') + '</li>';
+      }).join('') + '</ul>' : emptyState('🔎', 'No changes found', 'Try a wider date range or another filter.');
+    });
+  }
+
+  /* ---------- gallery / events ---------- */
+  var VIDEO_TYPES = { 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov' };
+  var GAL_MAX_VIDEO = 25 * 1024 * 1024;
+  function albumById(id) { return S.albums.filter(function (a) { return a.id === id; })[0] || null; }
+  function audienceLabel(cid) { return cid ? (CLASS_BY_ID[cid] ? CLASS_BY_ID[cid].emoji + ' ' + className(cid) : cid) : '🏫 ' + t('Whole school'); }
+  function viewGallery(arg) {
+    if (arg) return viewAlbum(arg);
+    var list = S.albums.slice().sort(function (a, b) { return String(a.date || '') < String(b.date || '') ? 1 : -1; });
+    var html = isAdmin() ? '<div class="toolbar"><button class="btn primary" data-act="album-add">➕ ' + esc(t('New album')) + '</button></div><p class="muted small">Photos are compressed before upload; videos up to 25 MB. Parents see whole-school albums and their own child’s class albums.</p>' : '';
+    if (!list.length) return html + emptyState('🖼️', 'No albums yet', isAdmin() ? 'Create an album for an event (e.g. “Annual Day 2026”) and add photos and videos.' : 'The admin has not shared any albums yet.');
+    return html + '<div class="album-grid">' + list.map(function (a) {
+      var items = asArray(a.items), cover = items.filter(function (i) { return i.type !== 'video'; })[0];
+      return '<a class="album-card card" href="#/gallery/' + encodeURIComponent(a.id) + '">' + (cover ? mediaHTML('gallery', cover.path, 'image', 'album-cover') : '<div class="media album-cover"><span class="media-wait">' + (items.length ? '🎬' : '🖼️') + '</span></div>') +
+        '<b>' + esc(a.title) + '</b><small class="muted">' + esc(a.date ? fmtDate(a.date) : '') + ' · ' + items.length + ' item' + (items.length === 1 ? '' : 's') + '</small><small>' + esc(audienceLabel(a.classId)) + '</small></a>';
+    }).join('') + '</div>';
+  }
+  function viewAlbum(id) {
+    var a = albumById(id);
+    if (!a) return emptyState('🖼️', 'Album not found', 'It may have been deleted.', '<a class="btn primary" href="#/gallery">Back to gallery</a>');
+    var items = asArray(a.items);
+    var html = '<div class="toolbar"><a class="btn ghost" href="#/gallery">← ' + esc(t('Gallery')) + '</a>' + (isAdmin() ? '<label class="btn primary file-btn">⬆️ ' + esc(t('Upload photos / videos')) + '<input type="file" accept="image/*,video/mp4,video/webm,video/quicktime" multiple data-change="gal-upload" data-id="' + esc(a.id) + '" hidden></label><button class="btn ghost" data-act="album-edit" data-id="' + esc(a.id) + '">' + esc(t('Edit')) + '</button><button class="icon-btn" data-act="album-del" data-id="' + esc(a.id) + '" title="Delete album" aria-label="Delete album">🗑️</button>' : '') + '</div>' +
+      '<section class="card"><h2>' + esc(a.title) + '</h2><p class="muted small">' + esc(a.date ? fmtDate(a.date) : '') + ' · ' + esc(audienceLabel(a.classId)) + ' · ' + items.length + ' item' + (items.length === 1 ? '' : 's') + '</p>' + (a.note ? '<p>' + esc(a.note) + '</p>' : '') + '<p id="gal-progress" class="note" hidden></p></section>';
+    if (!items.length) return html + emptyState('📷', 'No photos yet', isAdmin() ? 'Tap “Upload” to add photos and videos.' : 'Photos will appear here.');
+    return html + '<div class="gal-grid">' + items.map(function (it) {
+      return '<figure class="gal-item">' + mediaHTML('gallery', it.path, it.type, 'gal-media') + (isAdmin() ? '<button class="icon-btn gal-del" data-act="gal-del" data-album="' + esc(a.id) + '" data-id="' + esc(it.id) + '" title="Delete" aria-label="Delete">🗑️</button>' : '') + '</figure>';
+    }).join('') + '</div>';
+  }
+  function openAlbumForm(a) {
+    openModal({
+      title: a ? 'Edit album' : t('New album'), size: 'wide',
+      body: '<form class="form" novalidate><div class="grid2">' + field('Album / event title *', '<input name="title" maxlength="80" value="' + esc(a ? a.title : '') + '" placeholder="e.g. Annual Day 2026" required>') +
+        field(t('Date'), '<input type="date" name="date" value="' + esc(a ? a.date || '' : todayISO()) + '">') +
+        field('Who can see it', '<select name="classId">' + options([{ value: '', label: '🏫 ' + t('Whole school') }].concat(CLASSES.map(function (c) { return { value: c.id, label: c.emoji + ' ' + c.name + ' only' }; })), a ? a.classId || '' : '') + '</select>') +
+        field('Note (optional)', '<input name="note" maxlength="200" value="' + esc(a ? a.note || '' : '') + '">') +
+        '</div><div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">' + esc(t('Cancel')) + '</button><button class="btn primary">' + esc(t('Save')) + '</button></div></form>',
+      onSubmit: function (form, fd) {
+        var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
+        if (!g('title')) { fieldError(form, 'title', 'Enter a title'); return false; }
+        var rec = Object.assign({}, a || { id: 'al-' + uid(), items: [], createdAt: new Date().toISOString() }, { title: g('title'), date: isISODate(g('date')) ? g('date') : '', classId: CLASS_BY_ID[g('classId')] ? g('classId') : '', note: g('note'), by: ME.name });
+        S.albums = S.albums.filter(function (x) { return x.id !== rec.id; }).concat([rec]);
+        persist('albums'); toast('Album saved');
+        if (!a) location.hash = '#/gallery/' + encodeURIComponent(rec.id); else render();
+        return true;
+      }
+    });
+  }
+  function galleryUpload(input) {
+    var a = albumById(attr(input, 'id'));
+    var files = Array.prototype.slice.call(input.files || []);
+    input.value = '';
+    if (!a || !files.length || !isAdmin()) return;
+    var prog = document.getElementById('gal-progress'), done = 0, added = 0, skipped = [];
+    var say = function (m) { if (prog) { prog.hidden = false; prog.textContent = m; } };
+    var chain = Promise.resolve();
+    files.slice(0, 50).forEach(function (file) {
+      chain = chain.then(function () {
+        say('Uploading ' + (done + 1) + ' of ' + files.length + '…');
+        var fid = 'g' + uid(), isVid = /^video\//.test(file.type || '');
+        var step;
+        if (isVid) {
+          var ext = VIDEO_TYPES[file.type];
+          if (!ext) { skipped.push(file.name + ' (use MP4, WebM or MOV)'); return; }
+          if (file.size > GAL_MAX_VIDEO) { skipped.push(file.name + ' (over 25 MB)'); return; }
+          step = upload('gallery', a.id + '/' + fid + '.' + ext, file, file.type).then(function (p) { return { id: fid, path: p, type: 'video', name: String(file.name || '').slice(0, 80), size: file.size, at: new Date().toISOString() }; });
+        } else if (/^image\//.test(file.type || '')) {
+          step = compressImg(file, 1600, 0.82).then(function (b) { return upload('gallery', a.id + '/' + fid + '.jpg', b, 'image/jpeg').then(function (p) { return { id: fid, path: p, type: 'image', name: String(file.name || '').slice(0, 80), size: b.size, at: new Date().toISOString() }; }); });
+        } else { skipped.push(file.name + ' (not a photo or video)'); return; }
+        return step.then(function (item) {
+          var cur = albumById(a.id); if (!cur) return;
+          cur.items = asArray(cur.items).concat([item]).slice(-300); added++;
+          persist('albums');
+        }).catch(function (e) { skipped.push(file.name + ' (' + e.message + ')'); });
+      }).then(function () { done++; });
+    });
+    chain.then(function () {
+      say(added + ' uploaded' + (skipped.length ? ' · skipped: ' + skipped.join(', ') : ''));
+      toast(added + ' item' + (added === 1 ? '' : 's') + ' added to ' + a.title, skipped.length ? 'err' : 'ok');
+      render();
+      if (added) pushNotify('album', { ref: a.id });
+    });
+  }
+
+  /* ---------- settings cards: language, academic year, phone alerts ---------- */
+  function langCardHTML() {
+    if (!PART_B) return '';
+    return '<section class="card"><h2>🌐 ' + esc(t('Language')) + '</h2><p class="muted small">Menus and main labels. Saved on this phone and for your login.</p>' + langSelectHTML('lang-big') + '</section>';
+  }
+  function yearCardHTML() {
+    return '<section class="card"><h2>📅 ' + esc(t('Academic year')) + '</h2><form class="form" data-form="academic-year" novalidate><div class="grid2">' + field(t('Academic year'), '<input name="academicYear" maxlength="7" value="' + esc(academicYear()) + '" placeholder="2026-27">', '<small class="hint">Shown on ID cards and report cards. Year-end promotion moves it forward.</small>') + '</div><button class="btn primary">' + esc(t('Save')) + '</button></form></section>';
+  }
+  function alertsCardHTML() {
+    if (!PART_B) return '';
+    setTimeout(function () {
+      var box = document.getElementById('alerts-status');
+      if (!box) return;
+      pushCall('config').then(function (c) {
+        if (!document.getElementById('alerts-status')) return;
+        box.innerHTML = c.configured ? '<p class="note">✅ Phone alerts are set up. Parents can tap “Turn on alerts” in the Parents app. Alerts go out for new notices, homework/updates, absent marks (today), gallery albums, and fee reminders (only while fees are shown to parents).</p>'
+          : '<div class="callout warn"><b>Phone alerts are not switched on yet</b><p>A one-time setup is needed in Supabase (2 minutes):</p><ol class="install-steps">' +
+            '<li>Tap <b>Create alert keys</b> below. Two keys appear once, only on this screen (they are not saved anywhere).</li>' +
+            '<li>Open <b>Supabase → your project → Edge Functions → Secrets</b> (Manage secrets).</li>' +
+            '<li>Add <b>VAPID_PUBLIC_KEY</b> = the public key, <b>VAPID_PRIVATE_KEY</b> = the private key, and optionally <b>VAPID_SUBJECT</b> = mailto:your school email. Save.</li>' +
+            '<li>Come back here and reload: this card turns green.</li></ol><p class="small">Never paste the private key into WhatsApp, email or chat. If it is ever shared, create new keys and replace both secrets (parents then tap “Turn on alerts” again).</p>' +
+            '<button class="btn primary" data-act="vapid-gen">🔑 Create alert keys</button><div id="vapid-out"></div></div>';
+      }).catch(function (e) { box.innerHTML = '<p class="note warn">Could not check alerts: ' + esc(e.message) + '</p>'; });
+    }, 0);
+    return '<section class="card"><h2>🔔 ' + esc(t('Phone alerts')) + ' (Parents app)</h2><div id="alerts-status"><p class="muted">Checking…</p></div></section>';
+  }
+
+  /* ---------- routes, actions, forms ---------- */
+  Object.assign(ROUTES, {
+    homework: { title: 'Homework & updates', icon: '📚', roles: ['admin', 'teacher'], render: viewHomework },
+    timetable: { title: 'Timetable', icon: '🗓️', roles: ['admin', 'teacher'], render: viewTimetable },
+    exams: { title: 'Exams & reports', icon: '📝', roles: ['admin', 'teacher'], render: viewExams },
+    gallery: { title: 'Gallery', icon: '🖼️', roles: ['admin', 'teacher'], render: viewGallery },
+    transport: { title: 'Transport', icon: '🚐', roles: ['admin'], render: viewTransport },
+    idcards: { title: 'ID cards & TC', icon: '🪪', roles: ['admin'], render: viewIdCards },
+    promotion: { title: 'Promotion', icon: '🎓', roles: ['admin'], render: viewPromotion },
+    feedback: { title: 'Parent messages', icon: '💬', roles: ['admin'], render: viewFeedback },
+    audit: { title: 'Audit log', icon: '🔎', roles: ['admin'], render: viewAudit }
+  });
+  ROUTES.more.roles = ['admin', 'teacher'];
+  ROUTE_ORDER = ['dashboard', 'classes', 'attendance', 'homework', 'notices', 'timetable', 'exams', 'gallery', 'fees', 'pending', 'enquiries', 'feedback', 'transport', 'idcards', 'promotion', 'reports', 'expenses', 'staff', 'holidays', 'audit', 'backup', 'settings'];
+  var BOTTOM_TEACHER = ['dashboard', 'classes', 'attendance', 'homework', 'more'];
+  var MORE_SUB = {
+    notices: 'School and class notices', pending: 'Dues and WhatsApp reminders', reports: 'Fees, attendance, enquiries, profit', expenses: 'Rent, snacks, stationery…',
+    staff: 'Staff, salary, staff attendance', holidays: 'Holidays and events', backup: 'Download Excel / JSON backup', settings: 'School, fee rules, logins',
+    homework: 'Daily homework, learning and meal notes', timetable: 'Weekly class timetable', exams: 'Marks, grades and report cards', gallery: 'School photos and videos',
+    transport: 'Vans, drivers and van fees', idcards: 'Printable ID cards and TC', promotion: 'Move students to the next class', feedback: 'Messages from parents', audit: 'Who changed what'
+  };
+
+  var B2_ACTIONS = {
+    'post-add': function () { openPostForm(null); },
+    'post-edit': function (el) { var p = findPost(attr(el, 'id')); if (p) openPostForm(p); },
+    'post-del': function (el) {
+      var p = findPost(attr(el, 'id')); if (!p) return;
+      confirmBox('Delete this ' + postKindLabel(p.kind).toLowerCase() + ' post (' + fmtDate(p.date) + ')? Parents will no longer see it.', { ok: t('Delete') }).then(function (ok) {
+        if (!ok) return;
+        removeFiles('class-media', [p.photo]);
+        S.class_posts = S.class_posts.filter(function (x) { return x.id !== p.id; });
+        persist('class_posts'); toast('Post deleted'); render();
+      });
+    },
+    'tt-edit': function () { UI.ttEdit = b2Class('ttClass'); render(); },
+    'tt-cancel': function () { UI.ttEdit = null; render(); },
+    'tt-row-add': function () { var box = document.getElementById('tt-periods'); if (box && box.children.length < 12) box.insertAdjacentHTML('beforeend', ttPeriodHTML(null)); },
+    'tt-row-del': function (el) { var p = el.closest('.tt-period'); if (p) p.parentNode.removeChild(p); },
+    'exam-add': function () { openExamForm(null); },
+    'exam-edit': function (el) { var e = examById(attr(el, 'id')); if (e) openExamForm(e); },
+    'exam-del': function (el) {
+      var e = examById(attr(el, 'id')); if (!e) return;
+      confirmBox('Delete the exam “' + e.name + '” and all its marks? Parents will no longer see these report cards.', { ok: t('Delete') }).then(function (ok) {
+        if (!ok) return;
+        S.exams = S.exams.filter(function (x) { return x.id !== e.id; });
+        S.marks = S.marks.filter(function (m) { return m.examId !== e.id; });
+        persist('exams', 'marks'); toast('Exam deleted'); location.hash = '#/exams'; render();
+      });
+    },
+    'rc-view': function (el) { openReportCard(attr(el, 'exam'), attr(el, 'sid')); },
+    'rc-print': function (el) { var e = examById(attr(el, 'exam')); if (e) printReportCards(e, [attr(el, 'sid')]); },
+    'rc-print-all': function (el) { var e = examById(attr(el, 'id')); if (e) printReportCards(e, activeStudents(e.classId).map(function (s) { return s.id; })); },
+    'rc-wa': function (el) {
+      var e = examById(attr(el, 'exam')), s = studentById(attr(el, 'sid'));
+      if (e && s) waOpen(s.whatsapp || primaryPhone(s), reportCardText(e, s, marksOf(e.id, s.id)));
+    },
+    'doc-view': function (el) {
+      var d = S.student_docs.filter(function (x) { return x.id === attr(el, 'id'); })[0];
+      if (!d) return;
+      var w = window.open('', '_blank');
+      signedURL('student-docs', d.path, 120).then(function (url) {
+        if (!url) { if (w) w.close(); toast('Could not open the document', 'err'); return; }
+        if (w) w.location.href = url; else location.href = url;
+      });
+    },
+    'doc-del': function (el) {
+      var d = S.student_docs.filter(function (x) { return x.id === attr(el, 'id'); })[0];
+      if (!d) return;
+      confirmBox('Delete the ' + d.type + ' document (' + (d.name || '') + ')? The file is removed permanently.', { ok: t('Delete') }).then(function (ok) {
+        if (!ok) return;
+        removeFiles('student-docs', [d.path]).then(function () {
+          S.student_docs = S.student_docs.filter(function (x) { return x.id !== d.id; });
+          persist('student_docs'); toast('Document deleted'); refreshDocs(d.studentId);
+        });
+      });
+    },
+    'van-add': function () { openVanForm(null); },
+    'van-edit': function (el) { var v = vanById(attr(el, 'id')); if (v) openVanForm(v); },
+    'van-students': function (el) { var v = vanById(attr(el, 'id')); if (v) openVanStudents(v); },
+    'van-print': printVanList,
+    'van-del': function (el) {
+      var v = vanById(attr(el, 'id')); if (!v) return;
+      if (vanStudents(v.id).length) { toast('Remove its students first (Assign students → untick)', 'err'); return; }
+      confirmBox('Delete the van “' + v.name + '”?', { ok: t('Delete') }).then(function (ok) { if (!ok) return; S.vans = S.vans.filter(function (x) { return x.id !== v.id; }); persist('vans'); toast('Van deleted'); render(); });
+    },
+    'id-all': function (el) { var f = el.closest('form'); if (f) $$('[name=sid]', f).forEach(function (c) { if (!c.closest('.kid-opt').hidden) c.checked = el.checked; }); },
+    'tc-new': function (el) { var s = studentById(attr(el, 'id')); if (s && isAdmin()) openTCForm(s); },
+    'tc-print': function (el) { var s = studentById(attr(el, 'id')); if (s && s.tc) printDoc('Transfer Certificate', tcHTML(s), 'TC ' + s.tc.no + ' - ' + s.name); },
+    'promo-all': function (el) { var f = el.closest('form'); if (f) $$('[name=sid]', f).forEach(function (c) { c.checked = el.checked; }); },
+    'promo-undo': function () { if (isAdmin()) undoPromotion(); },
+    'fb-filter': function (el) { UI.fbFilter = attr(el, 'f'); render(); },
+    'fb-seen': function (el) { var f = fbById(attr(el, 'id')); if (!f) return; f.status = 'Seen'; f.seenAt = new Date().toISOString(); persist('feedback'); showShell(); },
+    'fb-reply': function (el) {
+      var f = fbById(attr(el, 'id')); if (!f) return;
+      openModal({
+        title: t('Reply') + ' · ' + (f.parentName || 'Parent'), body: '<form class="form" novalidate><p class="pre muted">' + esc(f.message || '') + '</p>' + field('Reply note (the parent sees this in the app)', '<textarea name="reply" rows="4" maxlength="500">' + esc(f.reply || '') + '</textarea>') +
+          '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">' + esc(t('Cancel')) + '</button><button class="btn primary">' + esc(t('Save')) + '</button></div></form>',
+        onSubmit: function (form, fd) {
+          var r = String(fd.get('reply') || '').trim().slice(0, 500);
+          if (!r) { fieldError(form, 'reply', 'Write a short reply'); return false; }
+          f.reply = r; f.status = 'Replied'; f.repliedAt = new Date().toISOString(); if (!f.seenAt) f.seenAt = f.repliedAt;
+          persist('feedback'); toast('Reply saved'); showShell(); return true;
+        }
+      });
+    },
+    'fb-del': function (el) {
+      var f = fbById(attr(el, 'id')); if (!f) return;
+      confirmBox('Delete this message from ' + (f.parentName || 'the parent') + '?', { ok: t('Delete') }).then(function (ok) { if (!ok) return; S.feedback = S.feedback.filter(function (x) { return x.id !== f.id; }); persist('feedback'); toast('Message deleted'); showShell(); });
+    },
+    'album-add': function () { if (isAdmin()) openAlbumForm(null); },
+    'album-edit': function (el) { var a = albumById(attr(el, 'id')); if (a && isAdmin()) openAlbumForm(a); },
+    'album-del': function (el) {
+      var a = albumById(attr(el, 'id')); if (!a || !isAdmin()) return;
+      confirmBox('Delete the album “' + a.title + '” and its ' + asArray(a.items).length + ' photos/videos? This cannot be undone.', { ok: t('Delete') }).then(function (ok) {
+        if (!ok) return;
+        removeFiles('gallery', asArray(a.items).map(function (i) { return i.path; })).then(function () {
+          S.albums = S.albums.filter(function (x) { return x.id !== a.id; });
+          persist('albums'); toast('Album deleted'); location.hash = '#/gallery';
+        });
+      });
+    },
+    'gal-del': function (el) {
+      var a = albumById(attr(el, 'album')); if (!a || !isAdmin()) return;
+      var it = asArray(a.items).filter(function (i) { return i.id === attr(el, 'id'); })[0]; if (!it) return;
+      confirmBox('Delete this ' + (it.type === 'video' ? 'video' : 'photo') + '?', { ok: t('Delete') }).then(function (ok) {
+        if (!ok) return;
+        removeFiles('gallery', [it.path]).then(function () { a.items = asArray(a.items).filter(function (i) { return i.id !== it.id; }); persist('albums'); toast('Deleted'); render(); });
+      });
+    },
+    'media-open': function (el) { if (el.src) window.open(el.src, '_blank', 'noopener'); },
+    'vapid-gen': function (el) {
+      if (!isAdmin()) return;
+      confirmBox('Create a new pair of alert keys? Only do this once, during setup (or if the private key was ever shared). The keys are shown only here and not saved.', { ok: 'Create keys', danger: false, title: 'Alert keys' }).then(function (ok) {
+        if (!ok) return;
+        el.disabled = true;
+        pushCall('generate_keys').then(function (k) {
+          var out = document.getElementById('vapid-out'); if (!out) return;
+          out.innerHTML = '<div class="vapid-keys">' + field('VAPID_PUBLIC_KEY', '<input readonly value="' + esc(k.publicKey) + '" data-act="select-all">') + field('VAPID_PRIVATE_KEY (secret — paste only into Supabase secrets)', '<input readonly value="' + esc(k.privateKey) + '" data-act="select-all">') + '<p class="small">Tap a key to select it, then copy. Close this page when done; the keys disappear.</p></div>';
+        }).catch(function (e) { el.disabled = false; toast(e.message, 'err'); });
+      });
+    },
+    'select-all': function (el) { try { el.select(); } catch (e) { /* ignore */ } }
+  };
+  var B2_CHANGES = {
+    'b2-class': function (el) { UI[attr(el, 'key')] = el.value; UI.ttEdit = null; render(); },
+    'lang': function (el) { setLang(el.value); },
+    'exam-publish': function (el) {
+      var e = examById(attr(el, 'id')); if (!e || !isAdmin()) return;
+      e.published = !!el.checked; e.publishedAt = el.checked ? new Date().toISOString() : '';
+      persist('exams'); toast(el.checked ? 'Report cards published to parents ✅' : 'Report cards hidden from parents'); render();
+    },
+    'gal-upload': function (el) { galleryUpload(el); }
+  };
+  var B2_FORMS = {
+    'tt-save': function (f, fd) {
+      var cid = UI.ttEdit; if (!CLASS_BY_ID[cid]) return;
+      var periods = $$('.tt-period', f).map(function (blk) {
+        var time = String($('[name=time]', blk).value || '').trim().slice(0, 30);
+        var cells = TT_DAYS.map(function (d, i) { var inp = $('[name=cell][data-day="' + i + '"]', blk); return inp ? String(inp.value || '').trim().slice(0, 60) : ''; });
+        return { time: time, cells: cells };
+      }).filter(function (p) { return p.time || p.cells.some(Boolean); }).slice(0, 12);
+      var rec = { id: cid, classId: cid, periods: periods, note: String(fd.get('note') || '').trim().slice(0, 200), by: ME.name, at: new Date().toISOString() };
+      S.timetables = S.timetables.filter(function (x) { return x.id !== cid; }).concat([rec]);
+      persist('timetables'); UI.ttEdit = null; toast('Timetable saved for ' + className(cid)); render();
+    },
+    'marks-save': function (f, fd) {
+      var e = examById(f.getAttribute('data-id')); if (!e) return;
+      var bad = '', n = 0;
+      activeStudents(e.classId).forEach(function (s) {
+        var marks = {}, any = false;
+        asArray(e.subjects).forEach(function (sub, i) {
+          var v = String(fd.get('m|' + s.id + '|' + i) || '').trim().slice(0, 12);
+          if (v && num(sub.max) > 0 && !/^ab$/i.test(v)) { var x = parseFloat(v); if (!isFinite(x) || x < 0 || x > num(sub.max) || !/^\d+(\.\d+)?$/.test(v)) { bad = bad || s.name + ' – ' + sub.name + ': enter 0–' + num(sub.max) + ' or AB'; return; } }
+          if (/^ab$/i.test(v)) v = 'AB';
+          marks[sub.name] = v; if (v) any = true;
+        });
+        var remarks = String(fd.get('r|' + s.id) || '').trim().slice(0, 600);
+        var id = 'mk-' + e.id + '-' + s.id, old = marksOf(e.id, s.id);
+        if (!any && !remarks && !old) return;
+        var rec = { id: id, classId: e.classId, examId: e.id, studentId: s.id, marks: marks, remarks: remarks, by: ME.name, at: new Date().toISOString() };
+        if (old && JSON.stringify(old.marks) === JSON.stringify(marks) && (old.remarks || '') === remarks) return;
+        S.marks = S.marks.filter(function (m) { return m.id !== id && !(m.examId === e.id && m.studentId === s.id); }).concat([rec]); n++;
+      });
+      if (bad) { toast(bad, 'err'); return; }
+      persist('marks'); toast(n ? 'Marks saved for ' + n + ' student' + (n === 1 ? '' : 's') : 'No changes'); render();
+    },
+    'doc-upload': function (f, fd) {
+      var sid = f.getAttribute('data-id'), s = studentById(sid), file = fd.get('file'), type = DOC_TYPES.indexOf(String(fd.get('type'))) >= 0 ? String(fd.get('type')) : 'Other';
+      if (!s || !isAdmin()) return;
+      if (!file || !file.size) { fieldError(f, 'file', 'Choose a file'); return; }
+      var mt = file.type || '', ext = mt === 'application/pdf' ? 'pdf' : mt === 'image/png' ? 'png' : mt === 'image/webp' ? 'webp' : mt === 'image/jpeg' ? 'jpg' : '';
+      if (!ext) { fieldError(f, 'file', 'Use a PDF, JPG, PNG or WebP file'); return; }
+      var step = Promise.resolve(file);
+      if (ext !== 'pdf' && file.size > 3 * 1024 * 1024) { ext = 'jpg'; mt = 'image/jpeg'; step = compressImg(file, 2200, 0.85); }
+      return step.then(function (blob) {
+        if (blob.size > 10 * 1024 * 1024) throw new Error('The file is over 10 MB');
+        var id = 'dc-' + uid(), path = sid + '/' + id + '.' + ext;
+        return upload('student-docs', path, blob, mt).then(function () {
+          S.student_docs.push({ id: id, studentId: sid, type: type, name: String(file.name || type).slice(0, 80), path: path, size: blob.size, mime: mt, at: new Date().toISOString(), by: ME.name });
+          persist('student_docs'); toast(type + ' uploaded'); refreshDocs(sid);
+        });
+      }).catch(function (e) { fieldError(f, 'file', e.message); });
+    },
+    'id-print': function (f, fd) { printIdCards(fd.getAll('sid').map(String)); },
+    'promo-run': function (f, fd) { if (isAdmin()) return runPromotion(f, fd); },
+    'audit-filter': function (f, fd) {
+      UI.audit = { tbl: String(fd.get('tbl') || ''), action: String(fd.get('action') || ''), from: String(fd.get('from') || ''), to: String(fd.get('to') || ''), q: String(fd.get('q') || '').trim().slice(0, 40) };
+      var box = document.getElementById('audit-list'); if (box) box.innerHTML = '<p class="muted">Loading…</p>';
+      loadAudit();
+    },
+    'academic-year': function (f, fd) {
+      var y = String(fd.get('academicYear') || '').trim();
+      if (!/^\d{4}-\d{2}$/.test(y)) return fieldError(f, 'academicYear', 'Use the form 2026-27');
+      S.settings.academicYear = y; persist('settings'); toast(t('Academic year') + ': ' + y);
+    }
+  };
+  Object.keys(B2_FORMS).forEach(function (k) { FORMS[k] = B2_FORMS[k]; });
 
   /* =====================================================================
    * EVENTS
@@ -3608,6 +4705,8 @@
       if (box) $$('.kid-opt', box).forEach(function (o) { o.hidden = !!q && o.getAttribute('data-name').indexOf(q) < 0; });
     }
   };
+  Object.keys(B2_ACTIONS).forEach(function (k) { ACTIONS[k] = B2_ACTIONS[k]; });
+  Object.keys(B2_CHANGES).forEach(function (k) { CHANGES[k] = B2_CHANGES[k]; });
 
   document.addEventListener('click', function (e) {
     var el = e.target.closest ? e.target.closest('[data-act]') : null;

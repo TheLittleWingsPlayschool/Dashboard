@@ -1,4 +1,4 @@
-# The Little Wings Play School — Admin & Classes Dashboard (v2.5, cloud) + Parents app (v1.3)
+# The Little Wings Play School — Admin & Classes Dashboard (v2.6, cloud) + Parents app (v1.4)
 
 A mobile-friendly dashboard for **The Little Wings Play School, Vuyyuru**, live at
 **https://thelittlewingsplayschool.github.io/Dashboard/**.
@@ -173,6 +173,24 @@ On a phone the bottom bar has **Dashboard, Classes, Attendance, Fees, Enquiries*
 
 Database: run `supabase/batch1.sql` after `enquiry_admission.sql`. It adds the `holidays`, `expenses`, `salaries`, `staff_attendance`, `fee_reminders` and `web_enquiry_hits` tables, all with RLS. Teachers can only read holidays, and parents get holidays through the `parent_holidays()` RPC only. The file also adds the fee-rule functions and the new `parent_fees()` columns `late_fee` and `discount`.
 
+## New in v2.6 (Batch 2, part A)
+Teachers now also get **More** (Homework, Timetable, Exams, Gallery, Holidays, Notices, Account). Admin-only screens are marked below.
+
+- **Homework & updates:** the class teacher (own class) or the admin posts *Homework*, *Today we learned* or *Meal* notes with an optional photo. Photos are compressed on the phone and kept in the private `class-media` bucket. Parents see their own child's class posts (last 30 days) in the Parents app, with photos through short-lived signed links.
+- **Timetable:** a Mon–Sat timetable per class. The admin or that class's teacher edits it; parents can only read it (Parents app → More → Timetable).
+- **Exams & report cards:** create an exam/term with subjects (marks out of a maximum, or grade-only subjects), enter marks/grades/remarks (AB = absent). The printable report card has the logo and can be printed / saved as PDF or shared on WhatsApp. Only the **admin** can turn on **Publish**; the database blocks teachers from publishing. Parents see only their own child's **published** report cards.
+- **Admission documents** (admin): in a student's details, upload Aadhaar, birth certificate, etc. (PDF or photo, up to 10 MB) to the private `student-docs` bucket. Opened with a 2-minute signed link; delete removes the file. Teachers and parents can never read them.
+- **Transport** (admin): vans with driver name and phone, vehicle number and route; assign students with their own van fee and start month. The van fee is a **separate line** in the monthly dues (with the same late-fee rule) and on receipts. Saved payments are never rewritten; unticking a student ends the van from this month, earlier months keep their van fee. **Print van list.**
+- **ID cards & TC** (admin): printable ID cards, 8 per A4 sheet (85.6 × 54 mm), with photo, class & section, parent phone and the school address. **Issue TC** prints a transfer certificate (TC-0001…), sets the student to *Left* or *Inactive* with the leaving date, and records the dues on the TC. Attendance, fees and receipts stay.
+- **Year-end promotion** (admin): pick students and their next class (or *Leaves*), the new **academic year** and the month the new class/fee starts. **Preview** before saving; **Undo last promotion** restores class, status and fees. Earlier months keep their old fee (saved as fee history in `student_fees.fee_hist`), so past dues are not re-priced; attendance and payment history are untouched. Fees can carry over or use a new yearly fee per class.
+- **Parent messages** (admin): parents send feedback from the app (max 1 per 2 minutes and 5 a day). Inbox with **New / All**, **Mark seen**, **Reply** and delete; parents see *Sent / Seen / Replied* and your reply.
+- **Audit log** (admin): database triggers record every add/change/delete on students, student fees, payments and settings (who, when, old → new). Keys that look like passwords, PINs or tokens are never recorded. Filter by table, change type, dates and text. Nobody can write or edit the log from the app.
+- **Gallery** (admin uploads): albums for the whole school or one class. Photos are compressed (max 1600 px), videos MP4/WebM/MOV up to 25 MB, all in the private `gallery` bucket with signed links. Parents see whole-school albums and their own child's class albums; delete removes the file.
+
+Parents app v1.4: new **Updates** tab (homework/daily notes), and **More** with Fees, Timetable, Report cards (print/PDF, WhatsApp), Gallery and Feedback. The fee summary and receipts show the van fee line.
+
+Database: run `supabase/batch2.sql` after `batch1.sql` (already applied to the project). It adds `class_posts`, `timetables`, `exams`, `marks` (class-scoped RLS), `vans`, `student_docs`, `promotions`, `feedback`, `albums`, `audit_log`, `push_subscriptions`, `push_log` (all with RLS), the three private buckets with storage policies, van/fee-history fee functions, and the parent RPCs `parent_posts`, `parent_timetable`, `parent_report_cards`, `parent_albums`, `parent_feedback_send`, `parent_feedback_list`. `parent_fees()` gains `van_fee`; `parent_payments()` gains `van_fee`.
+
 ## Files
 - `index.html`, `style.css`, `app.js` — the app. `Store` at the top of `app.js` is the only data layer (offline copy + sync).
 - `config.js` — Supabase project URL and the **publishable** key (public by design; access is controlled by login + RLS).
@@ -184,6 +202,7 @@ Database: run `supabase/batch1.sql` after `enquiry_admission.sql`. It adds the `
 - `supabase/enquiry_admission.sql` — v2.4: yearly fee column, private `student-photos` bucket and RLS, expanded `parent_children()` (section, status, photo path), and `parent_fees()` dues that treat Inactive like Left and use yearly÷12 when no nursery monthly fee is set (run after `receipts.sql`).
 - `assets/receipt.js`, `assets/receipt.css` — the shared fee receipt (HTML, print to one A4 page, PNG image, WhatsApp text, amount in words), used by both apps. No external libraries.
 - `supabase/batch1.sql` — v2.5: holidays, expenses, salaries, staff attendance, fee reminders, website-enquiry rate-limit log (all RLS), `parent_holidays()`, fee rules (late fee, sibling discount) in `parent_fees()`.
+- `supabase/batch2.sql` — v2.6: homework/updates, timetables, exams & marks, vans and van fee, fee history, admission documents, promotions, feedback, albums, audit log (triggers), push subscriptions (all RLS), private `class-media` / `student-docs` / `gallery` buckets and the new parent RPCs.
 - `supabase/functions/lw-enquiry/index.ts` — v2.5 public website enquiry form endpoint (insert-only, validated, rate-limited).
 - `assets/xlsx-lite.js` — tiny Excel (.xlsx) writer for backups and reports.
 - `supabase/functions/lw-admin/index.ts` — server function for creating the first admin and managing teacher and parent logins.

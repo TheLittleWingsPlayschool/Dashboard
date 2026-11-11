@@ -14,8 +14,8 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="assets/icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png" sizes="180x180">
-<link rel="stylesheet" href="style.css?v=2.5.0">
-<link rel="stylesheet" href="assets/receipt.css?v=2.5.0">
+<link rel="stylesheet" href="style.css?v=2.6.0">
+<link rel="stylesheet" href="assets/receipt.css?v=2.6.0">
 </head>
 <body>
 <noscript><div class="noscript">This dashboard needs JavaScript turned on in your browser.</div></noscript>
@@ -32,6 +32,7 @@
     </a>
     <div class="top-actions">
       <button type="button" id="sync-badge" class="sync-badge syncing" data-act="sync-retry" title="Connecting"><i></i><span>Connecting…</span></button>
+      <select id="lang-sel" class="lang-sel" data-change="lang" aria-label="Language / భాష / भाषा"><option value="en">EN</option><option value="te">తె</option><option value="hi">हि</option></select>
       <span id="user-chip" class="user-chip"></span>
       <button class="btn ghost small" data-act="logout" title="Sign out">🚪 <span class="hide-xs">Sign out</span></button>
     </div>
@@ -48,10 +49,10 @@
 
 <button type="button" id="sw-update" hidden>New version available — tap to refresh</button>
 
-<script src="config.js?v=2.5.0"></script>
+<script src="config.js?v=2.6.0"></script>
 <script src="assets/vendor/supabase-js-2.119.0.js"></script>
-<script src="assets/receipt.js?v=2.5.0"></script>
-<script src="assets/xlsx-lite.js?v=2.5.0"></script>
-<script src="app.js?v=2.5.0"></script>
+<script src="assets/receipt.js?v=2.6.0"></script>
+<script src="assets/xlsx-lite.js?v=2.6.0"></script>
+<script src="app.js?v=2.6.0"></script>
 </body>
 </html>
