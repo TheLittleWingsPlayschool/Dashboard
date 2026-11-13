@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.9.0';
+  var APP_VERSION = '2.10.0';
   // Part B (language toggle + phone alerts): on since v2.7.0.
   var PART_B = true;
   var PARENT_DOMAIN = 'parents.littlewings.app';
@@ -1210,7 +1210,7 @@
   };
   var ROUTE_ORDER = ['dashboard', 'classes', 'attendance', 'notices', 'fees', 'pending', 'enquiries', 'reports', 'expenses', 'staff', 'holidays', 'backup', 'settings'];
   // Phone bottom bar: admin gets 5 main pages + "More"; teachers see all of theirs.
-  var BOTTOM_ADMIN = ['dashboard', 'classes', 'attendance', 'fees', 'enquiries', 'more'];
+  var BOTTOM_ADMIN = ['dashboard', 'attendance', 'classes', 'fees', 'enquiries', 'more'];
   function routeTitle(key) { var r = ROUTES[key]; return t((ME && ME.role === 'teacher' && r.tTitle) ? r.tTitle : r.title); }
   function bottomList() { return isAdmin() ? BOTTOM_ADMIN : BOTTOM_TEACHER; }
   function parseHash() {
@@ -1365,11 +1365,11 @@
     var webNew = S.enquiries.filter(function (e) { return e.web && !e.seen; }).length;
     var offToday = offDay(today);
     var html = greeting + backupBannerHTML() + (webNew ? '<a class="callout web-new" href="#/enquiries"><b>🌐 ' + webNew + ' new enquir' + (webNew === 1 ? 'y' : 'ies') + ' from the website</b><p>Tap to see and call back.</p></a>' : '') + '<div class="stats">' +
-      stat('🧒', 'Students', String(studs.length), CLASSES.map(function (c, i) { return c.name + ' ' + per[i].n; }).join(' · '), 'sky', '#/classes') +
       (offToday && !tot.m ? stat('🎉', 'Today', 'Holiday', offToday, 'green', '#/holidays') : stat('✅', 'Attendance today', pctText(overallPct), tot.m + ' of ' + studs.length + ' marked', 'green', '#/attendance')) +
+      stat('🧒', 'Students', String(studs.length), CLASSES.map(function (c, i) { return c.name + ' ' + per[i].n; }).join(' · '), 'sky', '#/classes') +
+      stat('📝', 'Enquiries this month', String(enqMonth.length), enqConv + ' converted to admission' + (webNew ? ' · ' + webNew + ' new from website' : ''), 'purple', '#/enquiries') +
       stat('💰', 'Collected this month', inr(collectedMonth), 'Payments received in ' + fmtMonth(ym), 'yellow', '#/fees') +
       stat('⏳', 'Total pending', inr(outstandingTotal), outstandingList.length + ' student' + (outstandingList.length === 1 ? '' : 's') + ' with dues · tap to remind', 'coral', '#/pending') +
-      stat('📝', 'Enquiries this month', String(enqMonth.length), enqConv + ' converted to admission' + (webNew ? ' · ' + webNew + ' new from website' : ''), 'purple', '#/enquiries') +
       '</div>';
 
     html += '<section class="class-cards">' + per.map(function (x) {
@@ -1422,8 +1422,8 @@
     var bd = birthdaysThisMonth(c.id);
     var html = '<div class="hello"><div><h1>Hello, ' + esc(ME.name) + ' 👋</h1><p>' + esc(c.emoji + ' ' + c.name + ' (' + c.ages + ')') + ' · ' + fmtDate(today) + '</p></div></div>';
     html += '<div class="stats">' +
-      stat('🧒', 'Students', String(list.length), c.name, 'sky', '#/classes') +
       stat('✅', 'Attendance today', pctText(st.pct), st.marked ? st.P + ' present · ' + st.A + ' absent · ' + st.L + ' leave · ' + st.H + ' half-day' : 'Tap to mark now', st.marked ? 'green' : 'coral', '#/attendance') +
+      stat('🧒', 'Students', String(list.length), c.name, 'sky', '#/classes') +
       stat('🎂', 'Birthdays this month', String(bd.length), bd.map(function (s) { return s.name.split(' ')[0] + ' ' + fmtDate(s.dob).slice(0, 5); }).join(', '), 'yellow') +
       '</div>';
     if (offDay(today)) html += '<p class="note">🎉 Today is a holiday: <b>' + esc(offDay(today)) + '</b>. No attendance needed.</p>';
@@ -4277,16 +4277,18 @@
     audit: { title: 'Audit log', icon: '🔎', roles: ['admin'], render: viewAudit }
   });
   ROUTES.more.roles = ['admin', 'teacher'];
-  ROUTE_ORDER = ['dashboard', 'classes', 'attendance', 'homework', 'notices', 'timetable', 'exams', 'gallery', 'fees', 'pending', 'enquiries', 'feedback', 'transport', 'idcards', 'promotion', 'reports', 'expenses', 'staff', 'holidays', 'audit', 'backup', 'settings'];
-  var BOTTOM_TEACHER = ['dashboard', 'classes', 'attendance', 'homework', 'more'];
-  // v2.7.1: the menu is grouped so the 20+ pages are easy to find (side menu and More).
+  // v2.10.0: menu sorted by workflow, then by how often each page is used.
+  // Daily work first, then students & admissions, money, school calendar/photos, admin tools.
   var NAV_GROUPS = [
-    { id: 'daily', title: 'Daily', icon: '☀️', items: ['dashboard', 'classes', 'attendance', 'homework', 'notices'] },
-    { id: 'students', title: 'Students', icon: '🧒', items: ['timetable', 'exams', 'idcards', 'promotion', 'transport'] },
+    { id: 'daily', title: 'Daily', icon: '☀️', items: ['dashboard', 'attendance', 'homework', 'notices', 'feedback'] },
+    { id: 'students', title: 'Students', icon: '🧒', items: ['classes', 'enquiries', 'exams', 'timetable', 'transport', 'idcards', 'promotion'] },
     { id: 'money', title: 'Money', icon: '💰', items: ['fees', 'pending', 'expenses', 'staff', 'reports'] },
-    { id: 'school', title: 'School', icon: '🏫', items: ['enquiries', 'feedback', 'gallery', 'holidays'] },
-    { id: 'admin', title: 'Admin', icon: '🛠️', items: ['audit', 'backup', 'settings'] }
+    { id: 'school', title: 'School', icon: '🏫', items: ['gallery', 'holidays'] },
+    { id: 'admin', title: 'Admin', icon: '🛠️', items: ['settings', 'backup', 'audit'] }
   ];
+  // The flat order (used by the More page and as a fallback) follows the groups exactly.
+  ROUTE_ORDER = NAV_GROUPS.reduce(function (a, g) { return a.concat(g.items); }, []);
+  var BOTTOM_TEACHER = ['dashboard', 'attendance', 'homework', 'classes', 'more'];
   function navGroupsFor(keys) {
     var seen = {};
     var groups = NAV_GROUPS.map(function (g) {

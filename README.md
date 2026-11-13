@@ -210,6 +210,16 @@ Never paste the private key into WhatsApp, email, a chat or this repository. If 
 ## v2.7.1 — easier menu
 The menu is grouped into **Daily, Students, Money, School** and **Admin**. On a computer the side menu now scrolls on its own (short laptop screens), and each group can be folded by tapping its heading (remembered on that device; the group of the open page always opens). On a phone the **More** page uses the same groups. The *New version available* bar now sits just above the bottom bar and no longer covers menu items.
 
+## v2.10 — menu in workflow order
+The side menu, the phone **More** page and the bottom bar follow the order of a school day, most-used pages first in each group:
+- **Daily:** Dashboard, Attendance, Homework & updates, Notices, Parent messages
+- **Students:** Classes, Enquiries, Exams & reports, Timetable, Transport, ID cards & TC, Promotion
+- **Money:** Fees, Pending fees, Expenses, Staff, Reports
+- **School:** Gallery, Holidays
+- **Admin:** Settings, Backup, Audit log
+
+Phone bottom bar: admin **Dashboard, Attendance, Classes, Fees, Enquiries, More**; teacher **My Class, Attendance, Homework, Students, More**. The Dashboard tiles follow the same order (Attendance, Students, Enquiries, Collected, Pending). Teachers still see only their own pages. Nothing else changed.
+
 ## v2.9 — share the receipt itself, not just text
 
 - **Share receipt** (fee receipt), **Share slip** (salary slip) and **Share** (report card) now send a real file: a picture (PNG, about 2× sharp; JPEG if it would be over ~1.5 MB) through the phone's share sheet, so it can go straight to WhatsApp or any app. **Share PDF** sends a one-page A4 PDF instead.
