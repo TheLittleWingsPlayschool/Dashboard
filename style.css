@@ -656,3 +656,26 @@ body:has(#sw-update:not([hidden])) .view { padding-bottom: calc(var(--nav-h) + 5
   .receipt-actions .btn { width: 100%; justify-content: center; padding-left: .5rem; padding-right: .5rem; }
   .receipt-actions .btn.wa-btn, .receipt-actions .btn.sky { grid-column: span 1; min-height: 48px; }
 }
+
+/* ---------- v2.11 ---------- */
+.enr { display: inline-block; font-size: .72rem; font-weight: 700; color: #1b6e99; background: #eef6fc; border-radius: 6px; padding: 0 .35rem; margin-left: .3rem; letter-spacing: .02em; white-space: nowrap; }
+.enr-big { font-weight: 800; color: #1b6e99; letter-spacing: .03em; }
+.ro-field { min-height: 44px; display: flex; align-items: center; padding: .55rem .75rem; border: 2px dashed var(--line); border-radius: 12px; background: #f6f9fc; color: var(--muted); font-weight: 600; }
+.ro-field.strong { color: var(--ink); font-size: 1.15rem; font-weight: 800; border-style: solid; background: #eef8f1; border-color: #bfe3cb; }
+.commit-box { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin: .5rem 0; }
+.commit-box > div { background: #f3f8fc; border-radius: 12px; padding: .5rem .65rem; min-width: 0; }
+.commit-box span { display: block; font-size: .72rem; color: var(--muted); font-weight: 700; }
+.commit-box b { display: block; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.commit-box small { display: block; font-size: .68rem; color: var(--muted); }
+.pay-who { margin: .1rem 0 .3rem; }
+.pf-commit { background: #f6f9fc; border-radius: 10px; padding: .3rem .5rem; margin: .35rem 0 .2rem; }
+.seg5 { gap: .22rem; }
+.seg5 .seg-btn { width: 46px; height: 48px; }
+.seg5 .seg-btn span { font-size: .5rem; }
+.seg-btn.c.on { background: var(--purple, #9b7be0); border-color: var(--purple, #9b7be0); color: #fff; }
+.staff-sum td, .staff-sum th { white-space: nowrap; }
+@media (max-width: 420px) {
+  .seg5 .seg-btn { width: 40px; height: 46px; }
+  .seg5 .seg-btn span { display: none; }
+  .commit-box b { font-size: .95rem; }
+}

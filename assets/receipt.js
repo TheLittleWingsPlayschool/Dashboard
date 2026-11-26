@@ -48,6 +48,9 @@
     if (consecutive) return fmtMonth(l[0]) + ' – ' + fmtMonth(l[l.length - 1]) + ' (' + l.length + ' months)';
     return l.map(fmtMonth).join(', ');
   }
+  // v2.11: Commitment / Paid (till date) / Balance for the fee period.
+  function commitOf(r) { var c = r && r.commit; return c && isFinite(Number(c.commitment)) ? c : null; }
+  function commitBal(c) { return Number(c.balance) > 0 ? inr(c.balance) : 'Nil'; }
   function balanceText(r) {
     if (r.balance == null || !isFinite(r.balance)) return '';
     return r.balance > 0 ? inr(r.balance) : 'Nil (no dues)';
@@ -57,7 +60,8 @@
   function html(r) {
     var s = r.school || {};
     var row = function (k, v, cls) { return '<tr' + (cls ? ' class="' + cls + '"' : '') + '><th>' + k + '</th><td>' + v + '</td></tr>'; };
-    var bal = balanceText(r);
+    var bal = balanceText(r), cm = commitOf(r);
+    if (cm) bal = '';
     return '<article class="lwr' + (r.sample ? ' lwr-sample' : '') + '" aria-label="Fee receipt ' + esc(r.receiptNo) + '">' +
       (r.sample ? '<div class="lwr-wm" aria-hidden="true">SAMPLE</div>' : '') +
       '<div class="lwr-band" aria-hidden="true"></div>' +
@@ -69,6 +73,7 @@
       '<div class="lwr-meta"><div><small>Receipt No.</small><b>' + esc(r.receiptNo || '—') + '</b></div><div><small>Date</small><b>' + esc(fmtDate(r.date)) + '</b></div><div><small>Payment mode</small><b>' + esc(r.mode || '—') + '</b></div></div>' +
       '<table class="lwr-tbl"><tbody>' +
       row('Student name', '<b>' + esc(r.studentName || '—') + '</b>') +
+      (r.enrollNo ? row('Enrollment no.', '<b>' + esc(r.enrollNo) + '</b>') : '') +
       row('Class', esc(r.className || '—')) +
       row('Parent / Guardian', esc(r.parentName || '—')) +
       row('Fee for', esc(period(r.months))) +
@@ -80,6 +85,8 @@
       (r.ref ? row('Reference', esc(r.ref)) : '') +
       '</tbody></table>' +
       '<div class="lwr-amount"><div class="lwr-amt"><small>Amount paid</small><b>' + esc(inr(r.amount)) + '</b></div><div class="lwr-words"><small>Amount in words</small><b>' + esc(amountWords(r.amount)) + '</b></div></div>' +
+      (cm ? '<div class="lwr-commit"><div><small>Commitment</small><b>' + esc(inr(cm.commitment)) + '</b></div><div><small>Paid (till date)</small><b>' + esc(inr(cm.paid)) + '</b></div><div class="' + (Number(cm.balance) > 0 ? 'due' : 'ok') + '"><small>Balance</small><b>' + esc(commitBal(cm)) + '</b></div></div>' +
+        ((Number(cm.fines) > 0 || cm.label) ? '<p class="lwr-bal">' + (Number(cm.fines) > 0 ? 'Balance includes late fees of ' + esc(inr(cm.fines)) + '. ' : '') + (cm.label ? 'Figures ' + esc(cm.label) + '.' : '') + '</p>' : '') : '') +
       (bal ? '<p class="lwr-bal">' + esc(r.balanceLabel || 'Balance due after this payment') + ': <b>' + esc(bal) + '</b></p>' : '') +
       '<div class="lwr-sign"><div class="lwr-recv"><small>Received by</small><b>' + (r.receivedBy ? esc(r.receivedBy) : '&nbsp;') + '</b></div><div class="lwr-sigline">Signature / School seal</div></div>' +
       '<footer class="lwr-foot">This is a computer-generated receipt. Thank you!</footer>' +
@@ -88,9 +95,11 @@
 
   /* ---------- WhatsApp text ---------- */
   function text(r) {
-    var s = r.school || {}, bal = balanceText(r);
+    var s = r.school || {}, bal = balanceText(r), cm = commitOf(r);
+    if (cm) bal = '';
     return '🧾 *Fee Receipt ' + (r.receiptNo || '') + '*\n' + (s.name || 'The Little Wings Play School') + '\n\n' +
       'Student: ' + (r.studentName || '') + (r.className ? ' (' + r.className + ')' : '') + '\n' +
+      (r.enrollNo ? 'Enrollment no.: ' + r.enrollNo + '\n' : '') +
       'Fee for: ' + period(r.months) + '\n' +
       'Amount paid: ' + inr(r.amount) + '\n(' + amountWords(r.amount) + ')\n' +
       (Number(r.vanFee) > 0 ? 'Van fee: ' + inr(r.vanFee) + ' / month\n' : '') +
@@ -99,6 +108,7 @@
       'Mode: ' + (r.mode || '') + (r.ref ? ' · Ref ' + r.ref : '') + '\n' +
       'Date: ' + fmtDate(r.date) + '\n' +
       (bal ? 'Balance due: ' + bal + '\n' : '') +
+      (cm ? '\nCommitment: ' + inr(cm.commitment) + '\nPaid (till date): ' + inr(cm.paid) + '\n*Balance: ' + commitBal(cm) + '*' + (cm.label ? ' (' + cm.label + ')' : '') + '\n' : '') +
       (r.receivedBy ? 'Received by: ' + r.receivedBy + '\n' : '') +
       '\nThank you! 🙏' + (s.phone ? '\n' + s.phone : '');
   }
@@ -153,15 +163,17 @@
       var addr = wrap(ctx, s.address || '', W - P * 2 - 120 - 260);
       ctx.font = 'bold 26px ' + F;
       var words = wrap(ctx, amountWords(r.amount), W - P * 2 - 340);
-      var rows = [['Student name', r.studentName || '—', true], ['Class', r.className || '—'], ['Parent / Guardian', r.parentName || '—'], ['Fee for', period(r.months)]];
+      var rows = [['Student name', r.studentName || '—', true]].concat(r.enrollNo ? [['Enrollment no.', r.enrollNo, true]] : []).concat([['Class', r.className || '—'], ['Parent / Guardian', r.parentName || '—'], ['Fee for', period(r.months)]]);
       if (Number(r.yearlyFee) > 0) rows.push(['Yearly fee', inr(r.yearlyFee)]);
       if (Number(r.monthlyFee) > 0) rows.push(['Monthly fee', inr(r.monthlyFee)]);
       if (Number(r.discount) > 0) rows.push(['Sibling discount', inr(r.discount) + ' / month']);
       if (Number(r.vanFee) > 0) rows.push(['Van fee', inr(r.vanFee) + ' / month']);
       if (Number(r.lateFee) > 0) rows.push(['Late fee included', inr(r.lateFee)]);
       if (r.ref) rows.push(['Reference', r.ref]);
-      var bal = balanceText(r);
-      var H = 24 + 150 + addr.length * 24 + 110 + rows.length * 48 + 40 + Math.max(110, 50 + words.length * 34) + (bal ? 60 : 0) + 170 + 60;
+      var bal = balanceText(r), cm = commitOf(r);
+      if (cm) bal = '';
+      var cmNote = cm ? ((Number(cm.fines) > 0 ? 'Balance includes late fees of ' + inr(cm.fines) + '. ' : '') + (cm.label ? 'Figures ' + cm.label + '.' : '')) : '';
+      var H = 24 + 150 + addr.length * 24 + 110 + rows.length * 48 + 40 + Math.max(110, 50 + words.length * 34) + (bal ? 60 : 0) + (cm ? 130 + (cmNote ? 34 : 0) : 0) + 170 + 60;
       c.width = W; c.height = H;
       ctx = c.getContext('2d');
       ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
@@ -204,6 +216,18 @@
       ctx.fillStyle = '#1e2b38'; ctx.font = 'bold 26px ' + F;
       words.forEach(function (l, i) { ctx.fillText(l, P + 330, y + 46 + i * 34); });
       y += bh + 20;
+      if (cm) {
+        var cw3 = (W - P * 2 - 24) / 3, boxes = [['COMMITMENT', inr(cm.commitment), '#eef6fc', '#1b6e99'], ['PAID (TILL DATE)', inr(cm.paid), '#eaf6ec', '#1e7a3c'], ['BALANCE', commitBal(cm), Number(cm.balance) > 0 ? '#fdeceb' : '#eaf6ec', Number(cm.balance) > 0 ? '#c2453a' : '#1e7a3c']];
+        boxes.forEach(function (b, i) {
+          var bx = P + i * (cw3 + 12);
+          ctx.fillStyle = b[2]; roundRect(ctx, bx, y, cw3, 108, 14); ctx.fill();
+          ctx.fillStyle = '#5a6b7c'; ctx.font = '16px ' + F; ctx.fillText(b[0], bx + 20, y + 18, cw3 - 40);
+          ctx.fillStyle = b[3]; ctx.font = 'bold 36px ' + F; ctx.fillText(b[1], bx + 20, y + 48, cw3 - 40);
+        });
+        y += 124;
+        if (cmNote) { ctx.fillStyle = '#5a6b7c'; ctx.font = '18px ' + F; ctx.fillText(cmNote, P, y + 4, W - P * 2); y += 34; }
+        y += 6;
+      }
       if (bal) { ctx.fillStyle = '#1e2b38'; ctx.font = '22px ' + F; var lbl = (r.balanceLabel || 'Balance due after this payment') + ': '; ctx.fillText(lbl, P, y + 10); var lw = ctx.measureText(lbl).width; ctx.font = 'bold 22px ' + F; ctx.fillStyle = r.balance > 0 ? '#c2453a' : '#1e7a3c'; ctx.fillText(bal, P + lw, y + 10); y += 60; }
       y += 30;
       ctx.fillStyle = '#6b7b8c'; ctx.font = '16px ' + F; ctx.fillText('RECEIVED BY', P, y);

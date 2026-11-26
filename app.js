@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '2.10.0';
+  var APP_VERSION = '2.11.0';
   // Part B (language toggle + phone alerts): on since v2.7.0.
   var PART_B = true;
   var PARENT_DOMAIN = 'parents.littlewings.app';
@@ -81,8 +81,8 @@
     var ADMIN_WRITE = { settings: 1, student_fees: 1, payments: 1, enquiries: 1, staff: 1, holidays: 1, expenses: 1, salaries: 1, staff_attendance: 1, fee_reminders: 1, vans: 1, student_docs: 1, promotions: 1, feedback: 1, albums: 1 };
     var PK = { settings: 'id', students: 'id', student_fees: 'student_id', attendance: 'day,class_id' };
     var COLS = {
-      settings: 'id,data,deleted,updated_at', students: 'id,class_id,data,deleted,updated_at',
-      student_fees: 'student_id,monthly_fee,yearly_fee,van_fee,van_from,van_to,fee_hist,deleted,updated_at', attendance: 'day,class_id,data,deleted,updated_at'
+      settings: 'id,data,deleted,updated_at', students: 'id,class_id,data,deleted,updated_at,enroll_no',
+      student_fees: 'student_id,monthly_fee,yearly_fee,van_fee,van_from,van_to,fee_hist,fee_type,fee_months,deleted,updated_at', attendance: 'day,class_id,data,deleted,updated_at'
     };
     GENERIC.forEach(function (t) { PK[t] = 'id'; COLS[t] = 'id,data,deleted,updated_at'; });
     CLASSED.forEach(function (t) { PK[t] = 'id'; COLS[t] = 'id,class_id,data,deleted,updated_at'; });
@@ -91,7 +91,10 @@
     function feeRow(r) {
       var hist = asArray(r.fee_hist).filter(function (h) { return h && isMonth(h.until); }).map(function (h) { return { until: h.until, monthly: Number(h.monthly) || 0, yearly: Number(h.yearly) || 0, classId: CLASS_BY_ID[h.classId] ? h.classId : '' }; });
       return { student_id: String(r.student_id), monthly_fee: Number(r.monthly_fee) || 0, yearly_fee: Number(r.yearly_fee) || 0, van_fee: Number(r.van_fee) || 0,
-        van_from: isMonth(r.van_from) ? r.van_from : null, van_to: isMonth(r.van_to) ? r.van_to : null, fee_hist: hist, deleted: !!r.deleted };
+        van_from: isMonth(r.van_from) ? r.van_from : null, van_to: isMonth(r.van_to) ? r.van_to : null, fee_hist: hist,
+        // v2.11: fee type + committed months (committed_fee itself is a generated column, read by the server only)
+        fee_type: r.fee_type === 'monthly' ? 'monthly' : 'yearly', fee_months: (parseInt(r.fee_months, 10) >= 1 && parseInt(r.fee_months, 10) <= 24) ? parseInt(r.fee_months, 10) : null,
+        deleted: !!r.deleted };
     }
     var listeners = [], statusListeners = [];
     var U = null;            // { id, role }
@@ -114,7 +117,7 @@
       if (t === 'student_fees') return feeRow(r);
       if (isClassed(t)) return { id: String(r.id), class_id: r.class_id || null, data: asObject(r.data), deleted: d };
       if (t === 'attendance') return { day: String(r.day).slice(0, 10), class_id: r.class_id, data: asObject(r.data), deleted: d };
-      if (t === 'students') return { id: String(r.id), class_id: r.class_id, data: asObject(r.data), deleted: d };
+      if (t === 'students') return { id: String(r.id), class_id: r.class_id, data: asObject(r.data), deleted: d, enroll_no: r.enroll_no || null };
       if (t === 'settings') return { id: 1, data: asObject(r.data), deleted: d };
       return { id: String(r.id), data: asObject(r.data), deleted: d };
     }
@@ -138,11 +141,12 @@
       if (name === 'students') {
         var fees = st.rows.student_fees;
         return live('students').map(function (r) {
-          var o = clone(r.data); o.id = r.id; o.classId = r.class_id;
+          var o = clone(r.data); o.id = r.id; o.classId = r.class_id; o.enrollNo = r.enroll_no || '';
           if (isAdminRole()) {
             var f = fees[r.id], ok = f && !f.deleted;
             o.monthlyFee = ok ? f.monthly_fee : 0; o.yearlyFee = ok ? f.yearly_fee : 0; o.vanFee = ok ? f.van_fee || 0 : 0;
             o.vanFrom = ok && f.van_from ? f.van_from : ''; o.vanTo = ok && f.van_to ? f.van_to : ''; o.feeHist = ok ? clone(asArray(f.fee_hist)) : [];
+            o.feeType = ok && f.fee_type === 'monthly' ? 'monthly' : 'yearly'; o.feeMonths = ok && f.fee_months ? f.fee_months : null;
           }
           return o;
         });
@@ -163,8 +167,10 @@
         asArray(value).forEach(function (s) {
           if (!s || !s.id || !CLASS_BY_ID[s.classId]) return;
           var id = String(s.id);
-          out.students[id] = { id: id, class_id: s.classId, data: strip(s, ['id', 'classId', 'monthlyFee', 'yearlyFee', 'vanFee', 'vanFrom', 'vanTo', 'feeHist']), deleted: false };
-          if (out.student_fees) out.student_fees[id] = feeRow({ student_id: id, monthly_fee: num(s.monthlyFee), yearly_fee: num(s.yearlyFee), van_fee: num(s.vanFee), van_from: s.vanFrom, van_to: s.vanTo, fee_hist: s.feeHist });
+          // v2.11: enroll_no is given by the database (trigger) and can never be changed here.
+          var prevRow = st.rows.students[id];
+          out.students[id] = { id: id, class_id: s.classId, data: strip(s, ['id', 'classId', 'monthlyFee', 'yearlyFee', 'vanFee', 'vanFrom', 'vanTo', 'feeHist', 'enrollNo', 'feeType', 'feeMonths']), deleted: false, enroll_no: (prevRow && prevRow.enroll_no) || null };
+          if (out.student_fees) out.student_fees[id] = feeRow({ student_id: id, monthly_fee: num(s.monthlyFee), yearly_fee: num(s.yearlyFee), van_fee: num(s.vanFee), van_from: s.vanFrom, van_to: s.vanTo, fee_hist: s.feeHist, fee_type: s.feeType, fee_months: s.feeMonths });
         });
       } else if (name === 'attendance') {
         out.attendance = {};
@@ -223,7 +229,7 @@
     function cacheKey(id) { return CACHE + (id || (U && U.id)); }
     function saveCache() {
       if (!U) return;
-      try { localStorage.setItem(cacheKey(), JSON.stringify({ v: 3, rows: st.rows, profiles: st.profiles, profile: st.profile, queue: st.queue, since: st.since, lastSync: st.lastSync, firstSyncDone: st.firstSyncDone })); }
+      try { localStorage.setItem(cacheKey(), JSON.stringify({ v: 4, rows: st.rows, profiles: st.profiles, profile: st.profile, queue: st.queue, since: st.since, lastSync: st.lastSync, firstSyncDone: st.firstSyncDone })); }
       catch (e) { if (!cacheWarned) { cacheWarned = true; toast('This device’s offline copy is full. Online saving still works.', 'err'); } }
     }
     function init(userId) {
@@ -232,12 +238,14 @@
       st = emptyState();
       try {
         var c = JSON.parse(localStorage.getItem(cacheKey()) || 'null');
-        if (c && (c.v === 2 || c.v === 3)) {
+        if (c && (c.v === 2 || c.v === 3 || c.v === 4)) {
           DB.forEach(function (t) { st.rows[t] = asObject(c.rows && c.rows[t]); });
           st.profiles = asArray(c.profiles); st.profile = c.profile || null; st.queue = asObject(c.queue);
           st.since = asObject(c.since); st.lastSync = c.lastSync || null; st.firstSyncDone = !!c.firstSyncDone;
           // v2 offline copies have no van/fee-history columns: re-read fees in full.
           if (c.v === 2) { st.since.student_fees = null; Object.keys(st.rows.student_fees).forEach(function (k) { st.rows.student_fees[k] = feeRow(st.rows.student_fees[k]); }); }
+          // v2.11: re-read students (enrollment no.) and fees (fee type / months) in full once.
+          if (c.v !== 4) { st.since.students = null; st.since.student_fees = null; Object.keys(st.rows.student_fees).forEach(function (k) { st.rows.student_fees[k] = feeRow(st.rows.student_fees[k]); }); }
         }
       } catch (e) { console.warn('Offline copy unreadable, starting fresh', e); }
       if (st.profile) U.role = st.profile.role;
@@ -255,6 +263,7 @@
       if (/row-level security|permission denied/i.test(m)) return 'not allowed for your account';
       return m;
     }
+    var enrollPull = false;
     function run(task) { var p = chain.then(task, task); chain = p.catch(function () {}); return p; }
     async function flushNow() {
       var byT = {}, repull = false;
@@ -277,6 +286,8 @@
             continue;
           }
           chunk.forEach(function (it) { var q = st.queue[it.t + '|' + it.k]; if (q && q.v === it.v) delete st.queue[it.t + '|' + it.k]; });
+          // v2.11: a new admission gets its enrollment no. from the database — read it back soon.
+          if (t === 'students' && payload.some(function (r) { return !r.enroll_no && !r.deleted; })) enrollPull = true;
           saveCache(); setStatus();
         }
       }
@@ -356,7 +367,7 @@
         if (!U || !pendingCount()) { setStatus(); return; }
         if (navigator.onLine === false) { setStatus('offline'); return; }
         setStatus('syncing');
-        try { var repull = await flushNow(); setStatus('online', ''); if (repull) schedulePull(0); }
+        try { var repull = await flushNow(); setStatus('online', ''); if (repull) schedulePull(0); else if (enrollPull) { enrollPull = false; schedulePull(300); } }
         catch (e) { handleErr(e); }
       });
     }
@@ -584,13 +595,14 @@
   }
   function classLabel(s) {
     if (!s) return '—';
-    return className(s.classId) + (s.section ? ' — Sec ' + s.section : '');
+    return className(s.classId) + (s.section ? ' — Sec ' + secLabel(s.section) : '');
   }
   // Nursery: use the optional monthly fee when set. Otherwise (and for every
   // other class) show yearly/12 when a yearly fee is stored. Fall back to a
   // stored monthly fee so older records keep working. Never rewrite payments.
   function effectiveMonthly(s) {
     if (!s) return 0;
+    if (s.feeType === 'monthly' && num(s.monthlyFee) > 0) return num(s.monthlyFee);
     if (s.classId === 'nursery' && num(s.monthlyFee) > 0) return num(s.monthlyFee);
     if (num(s.yearlyFee) > 0) return Math.round((num(s.yearlyFee) / 12) * 100) / 100;
     return num(s.monthlyFee) || 0;
@@ -690,7 +702,11 @@
   }
   function baseMonth(s, ym) {
     var h = isMonth(ym) ? histFor(s, ym) : null;
-    if (!h) return effectiveMonthly(s);
+    if (!h) {
+      // v2.11: a monthly payer is billed only for the committed months.
+      if (isMonth(ym) && feeTypeOf(s) === 'monthly' && feeMonthsOf(s) && ym > addMonths(commitFrom(s), feeMonthsOf(s) - 1)) return 0;
+      return effectiveMonthly(s);
+    }
     return effectiveMonthly({ classId: CLASS_BY_ID[h.classId] ? h.classId : s.classId, monthlyFee: h.monthly, yearlyFee: h.yearly });
   }
   function netMonth(s, ym) { if (!s) return 0; var b = baseMonth(s, ym); return b > 0 ? round2(b - siblingDiscount(s, b)) : 0; }
@@ -736,8 +752,47 @@
     return monthRange(start, end).reduce(function (a, m) { return a + dueFor(s, m); }, 0);
   }
 
+  /* v2.11 — committed fee (mirrors supabase/v211.sql app.commit_info).
+   * Monthly payer: amount per month × number of months. Yearly payer: yearly fee.
+   * Commitment = committed fee − sibling discount + van fee for the period.
+   * Paid (till date) = payments towards the months of the period.
+   * Balance = commitment + late fees so far − paid. */
+  function feeTypeOf(s) { return s && s.feeType === 'monthly' ? 'monthly' : 'yearly'; }
+  function feeMonthsOf(s) { var n = parseInt(s && s.feeMonths, 10); return n >= 1 && n <= 24 ? n : 0; }
+  function committedFee(s) {
+    if (!s) return null;
+    if (feeTypeOf(s) === 'monthly') { var n = feeMonthsOf(s); return n ? round2(num(s.monthlyFee) * n) : null; }
+    return round2(num(s.yearlyFee));
+  }
+  function commitFrom(s) {
+    var from = feeStart(s), last = '';
+    asArray(s && s.feeHist).forEach(function (h) { if (h && isMonth(h.until) && h.until > last) last = h.until; });
+    if (last && addMonths(last, 1) > from) from = addMonths(last, 1);
+    return from;
+  }
+  function commitInfo(s) {
+    var cf = committedFee(s);
+    if (cf == null || !s) return null;
+    var n = feeTypeOf(s) === 'monthly' ? feeMonthsOf(s) : 12;
+    if (!n) return null;
+    var from = commitFrom(s), ms = [], cur = thisMonth(), disc = 0, van = 0, fines = 0, paid = 0;
+    for (var i = 0; i < n; i++) ms.push(addMonths(from, i));
+    ms.forEach(function (m) {
+      paid += paidFor(s.id, m);
+      var net = netMonth(s, m);
+      if (!(net > 0)) return;
+      disc += Math.max(0, baseMonth(s, m) - net);
+      var v = vanMonth(s, m); van += v;
+      if (m <= cur) fines += lateFine(s, m, round2(net + v));
+    });
+    var commitment = round2(cf - disc + van);
+    return { committed: cf, from: from, to: ms[ms.length - 1], months: n, type: feeTypeOf(s), perMonth: feeTypeOf(s) === 'monthly' ? num(s.monthlyFee) : 0,
+      discount: round2(disc), van: round2(van), fines: round2(fines), commitment: commitment, paid: round2(paid), balance: round2(commitment + fines - paid) };
+  }
+  function secLabel(sec) { return sec === 'D' ? 'D (' + t('Drop') + ')' : sec === 'I' ? 'I (' + t('Inactive') + ')' : sec; }
+
   // expose for tests
-  window.__lw = { inWords: inWords, outstanding: function (id) { var s = studentById(id); return s ? outstanding(s) : null; }, paidFor: paidFor, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION, effectiveMonthly: effectiveMonthly, isInactive: isInactive, netMonthly: function (id) { return netMonthly(studentById(id)); }, lateFine: function (id, ym) { var s = studentById(id); return s ? fineFor(s, ym) : null; }, chargeFor: function (id, ym) { var s = studentById(id); return s ? chargeFor(s, ym) : null; }, netMonth: function (id, ym) { var s = studentById(id); return s ? netMonth(s, ym) : null; }, vanMonth: function (id, ym) { var s = studentById(id); return s ? vanMonth(s, ym) : null; }, dueFor: function (id, ym) { var s = studentById(id); return s ? dueFor(s, ym) : null; } };
+  window.__lw = { commitInfo: function (id) { return commitInfo(studentById(id)); }, committedFee: function (id) { return committedFee(studentById(id)); }, inWords: inWords, outstanding: function (id) { var s = studentById(id); return s ? outstanding(s) : null; }, paidFor: paidFor, ageParts: ageParts, suggestClass: suggestClass, normPhone: normPhone, validPhone: validPhone, fmtDate: fmtDate, addMonths: addMonths, Store: Store, version: APP_VERSION, effectiveMonthly: effectiveMonthly, isInactive: isInactive, netMonthly: function (id) { return netMonthly(studentById(id)); }, lateFine: function (id, ym) { var s = studentById(id); return s ? fineFor(s, ym) : null; }, chargeFor: function (id, ym) { var s = studentById(id); return s ? chargeFor(s, ym) : null; }, netMonth: function (id, ym) { var s = studentById(id); return s ? netMonth(s, ym) : null; }, vanMonth: function (id, ym) { var s = studentById(id); return s ? vanMonth(s, ym) : null; }, dueFor: function (id, ym) { var s = studentById(id); return s ? dueFor(s, ym) : null; } };
 
   /* =====================================================================
    * UI PRIMITIVES
@@ -1467,7 +1522,7 @@
       if (UI.classStatus === 'Active' && isInactive(s)) return false;
       if (UI.classStatus === 'Inactive' && !isInactive(s)) return false;
       if (!q) return true;
-      return [s.name, primaryName(s), s.motherName, s.fatherName, s.guardianName, primaryPhone(s), s.motherPhone, s.fatherPhone, s.guardianPhone, s.whatsapp, s.address, s.section].join(' ').toLowerCase().indexOf(q) >= 0;
+      return [s.name, primaryName(s), s.motherName, s.fatherName, s.guardianName, primaryPhone(s), s.motherPhone, s.fatherPhone, s.guardianPhone, s.whatsapp, s.address, s.section, s.enrollNo].join(' ').toLowerCase().indexOf(q) >= 0;
     }).sort(byName);
     if (!all.length) return emptyState(CLASS_BY_ID[cid].emoji, 'No students in ' + className(cid) + ' yet', 'Add the first child to this class — it only takes a minute.', '<button class="btn primary" data-act="student-add" data-class="' + cid + '">➕ Add student</button>');
     if (!list.length) return emptyState('🔍', 'No matches', 'No students match your search or filter.');
@@ -1476,12 +1531,12 @@
       list.map(function (s) {
         var stTag = s.status === 'Left' ? ' <span class="tag">Left</span>' : (s.status === 'Inactive' ? ' <span class="tag inactive">Inactive</span>' : '');
         return '<tr' + (isInactive(s) ? ' class="left"' : '') + '><td data-label="Name"><div class="stu-name">' + avatarHTML(s, 'sm') + '<span class="who"><button type="button" class="link strong" data-act="student-view" data-id="' + esc(s.id) + '">' + esc(s.name) + '</button>' +
-          (s.section ? ' <span class="muted">Sec ' + esc(s.section) + '</span>' : '') +
-          (s.medical ? ' <span title="Has medical notes" class="tag med">⚕️ Medical</span>' : '') + stTag + '</span></div></td>' +
+          (s.section ? ' <span class="muted">Sec ' + esc(secLabel(s.section)) + '</span>' : '') +
+          (s.medical ? ' <span title="Has medical notes" class="tag med">⚕️ Medical</span>' : '') + stTag + (s.enrollNo ? '<small class="enr">' + esc(s.enrollNo) + '</small>' : '') + '</span></div></td>' +
           '<td data-label="Age">' + esc(ageText(s.dob)) + '</td>' +
           '<td data-label="Parent">' + esc(primaryName(s) || '—') + '</td>' +
           '<td data-label="Phone">' + phoneLinks(primaryPhone(s), s.whatsapp) + '</td>' +
-          (admin ? '<td data-label="Fee" class="num">' + (effectiveMonthly(s) ? inr(effectiveMonthly(s)) : '<span class="muted">—</span>') + '</td>' : '') +
+          (admin ? '<td data-label="Fee" class="num">' + (effectiveMonthly(s) ? inr(effectiveMonthly(s)) + (feeTypeOf(s) === 'monthly' ? ' <small class="muted">' + esc(t('Monthly')) + (feeMonthsOf(s) ? ' × ' + feeMonthsOf(s) : '') + '</small>' : '') : '<span class="muted">—</span>') + '</td>' : '') +
           '<td class="actions"><button type="button" class="icon-btn" data-act="student-edit" data-id="' + esc(s.id) + '" title="Edit" aria-label="Edit ' + esc(s.name) + '">✏️</button>' +
           (admin ? '<button type="button" class="icon-btn" data-act="student-del" data-id="' + esc(s.id) + '" title="Delete" aria-label="Delete ' + esc(s.name) + '">🗑️</button>' : '') + '</td></tr>';
       }).join('') + '</tbody></table></div>';
@@ -1494,11 +1549,11 @@
       : '<select name="classId" required>' + options(classOptions(), v.classId, 'Select class') + '</select>';
     var statusOpts = ['Active', 'Inactive'];
     if (v.status === 'Left') statusOpts = ['Active', 'Inactive', 'Left'];
-    var secs = sectionList();
-    if (v.section && secs.indexOf(v.section) < 0) secs = [v.section].concat(secs);
-    var showMonthly = teacher ? false : (v.classId === 'nursery' || (!v.classId && false) || (s && num(s.monthlyFee) > 0 && v.classId !== 'nursery'));
-    // Keep a legacy monthly field visible when a non-nursery student already has one.
-    if (!teacher && s && num(s.monthlyFee) > 0 && v.classId !== 'nursery') showMonthly = true;
+    var secs = sectionList().filter(function (x) { return x !== 'D' && x !== 'I'; });
+    if (v.section && secs.indexOf(v.section) < 0 && v.section !== 'D' && v.section !== 'I') secs = [v.section].concat(secs);
+    var secOpts = secs.map(function (x) { return { value: x, label: t('Section') + ' ' + x }; }).concat([{ value: 'D', label: 'D (' + t('Drop') + ')' }, { value: 'I', label: 'I (' + t('Inactive') + ')' }]);
+    // v2.11: fee type (yearly / monthly) for every class.
+    var ft = v.feeType === 'monthly' || (!v.feeType && num(v.monthlyFee) > 0 && !num(v.yearlyFee)) ? 'monthly' : 'yearly';
     var photo = '<div class="photo-pick"><div class="avatar" id="photo-preview" style="--c:' + ((CLASS_BY_ID[v.classId] && CLASS_BY_ID[v.classId].color) || '#38a8e0') + '"' + (photoPathOf(v) ? ' data-photo-path="' + esc(photoPathOf(v)) + '"' : '') + '>' + esc(initials(v.name)) + '</div>' +
       (teacher ? '<p class="muted small">The admin can add a photo.</p>' : '<div class="photo-acts"><label class="btn ghost small file-btn">📷 Take or choose photo<input type="file" name="photoFile" accept="image/*" hidden></label>' +
         '<button type="button" class="btn small ghost" data-act="photo-clear"' + (photoPathOf(v) || v.photoPath ? '' : ' hidden') + '>Remove</button>' +
@@ -1511,7 +1566,8 @@
       field('Child’s full name *', '<input name="name" maxlength="80" autocomplete="off" value="' + esc(v.name) + '" required>') +
       field('Date of birth *', '<input type="date" name="dob" max="' + todayISO() + '" value="' + esc(v.dob) + '" required>', '<small class="hint" id="age-hint"></small>') +
       field('Class *', classCtl) +
-      field('Section', '<select name="section">' + options(secs.map(function (x) { return { value: x, label: 'Section ' + x }; }), v.section, 'Select section') + '</select>', '<small class="hint">Assigned after the class is chosen. Sections can be edited in Settings.</small>', 'span2') +
+      field(t('Section'), '<select name="section">' + options(secOpts, v.section, 'Select section') + '</select>', '<small class="hint">' + esc(t('Assigned after the class is chosen. D = Drop, I = Inactive.')) + '</small>') +
+      field(t('Enrollment no.'), '<div class="ro-field" id="enroll-out">' + esc(v.enrollNo || (s ? t('Being assigned…') : t('Given automatically when saved'))) + '</div>', '<small class="hint">' + esc(t('One school-wide number for every class. It cannot be changed.')) + '</small>') +
       field('Admission date *', '<input type="date" name="admissionDate" value="' + esc(v.admissionDate) + '" required>') +
       field('Status', '<select name="status">' + options(statusOpts, v.status === 'Left' ? 'Left' : (v.status === 'Inactive' ? 'Inactive' : 'Active')) + '</select>') +
       (teacher ? '' : '<div class="form-sec span2"><h3>Photo</h3>' + photo + '</div>') +
@@ -1526,8 +1582,11 @@
       field('WhatsApp number', '<input type="tel" name="whatsapp" inputmode="tel" maxlength="16" placeholder="Blank = same as primary phone" value="' + esc(v.whatsapp) + '">') +
       field('Student address', '<textarea name="address" rows="2" maxlength="250" placeholder="House / street, area, town">' + esc(v.address) + '</textarea>', '', 'span2') +
       (teacher ? '' : '<div class="form-sec"><h3>Fees</h3></div>') +
-      (teacher ? '' : field('Yearly fee (₹)', '<input type="number" name="yearlyFee" min="0" max="10000000" step="1" inputmode="numeric" placeholder="e.g. 18000" value="' + esc(v.yearlyFee == null || v.yearlyFee === 0 ? (v.yearlyFee === 0 ? '0' : '') : v.yearlyFee) + '">', '<small class="hint">For all classes. Receipts and pending dues use this (÷ 12) unless a nursery monthly fee is set.</small>')) +
-      (teacher ? '' : field('Monthly fee (₹) — Nursery only, optional', '<input type="number" name="monthlyFee" min="0" max="1000000" step="1" inputmode="numeric" placeholder="Leave blank to use yearly ÷ 12" value="' + esc(v.monthlyFee == null || v.monthlyFee === 0 ? '' : v.monthlyFee) + '">', '<small class="hint fee-hint" id="monthly-hint"></small>', '') ) +
+      (teacher ? '' : field(t('Fee type') + ' *', '<select name="feeType">' + options([{ value: 'yearly', label: t('Yearly') }, { value: 'monthly', label: t('Monthly') }], ft) + '</select>', '<small class="hint">' + esc(t('Monthly payers: enter the amount per month and for how many months.')) + '</small>')) +
+      (teacher ? '' : field(t('Yearly fee') + ' (₹) *', '<input type="number" name="yearlyFee" min="0" max="10000000" step="1" inputmode="numeric" placeholder="e.g. 18000" value="' + esc(ft === 'yearly' && v.yearlyFee != null && v.yearlyFee !== '' ? v.yearlyFee : '') + '">', '<small class="hint">' + esc(t('Dues each month are yearly fee ÷ 12.')) + '</small>', 'fee-y')) +
+      (teacher ? '' : field(t('Amount per month') + ' (₹) *', '<input type="number" name="monthlyFee" min="0" max="1000000" step="1" inputmode="numeric" placeholder="e.g. 1500" value="' + esc(ft === 'monthly' && num(v.monthlyFee) ? v.monthlyFee : '') + '">', '', 'fee-m')) +
+      (teacher ? '' : field(t('Number of months') + ' *', '<input type="number" name="feeMonths" min="1" max="24" step="1" inputmode="numeric" placeholder="e.g. 10" value="' + esc(ft === 'monthly' && v.feeMonths ? v.feeMonths : '') + '">', '', 'fee-m')) +
+      (teacher ? '' : field(t('Committed fee') + ' (₹)', '<div class="ro-field strong" id="commit-out" aria-live="polite">—</div>', '<small class="hint" id="commit-hint"></small>', 'span2')) +
       field('Emergency contact', '<input name="emergency" maxlength="120" placeholder="Name & phone" value="' + esc(v.emergency) + '">') +
       field('Authorised pickup', '<input name="pickup" maxlength="160" placeholder="Who may collect the child" value="' + esc(v.pickup) + '">') +
       '</div>' +
@@ -1571,20 +1630,23 @@
       if (!preview.querySelector('img')) preview.textContent = initials(nameInp.value);
     });
   }
-  function syncFeeAndSectionFields(root, touchedSection) {
-    var cls = ($('select[name=classId]', root) || $('[name=classId]', root) || {}).value;
-    var monWrap = $('[name=monthlyFee]', root) && $('[name=monthlyFee]', root).closest('.field');
-    var hint = $('#monthly-hint', root);
-    var isNur = cls === 'nursery';
-    var hasLegacy = monWrap && $('[name=monthlyFee]', root).value;
-    if (monWrap) {
-      // Show monthly for Nursery, or when a legacy monthly value is already stored.
-      var show = isNur || (!!hasLegacy && cls !== 'nursery' && !root._hideLegacyMonthly);
-      if (!isNur && root._forceHideMonthly) show = false;
-      monWrap.hidden = !isNur && !(+$('[name=monthlyFee]', root).value > 0);
-      if (isNur) monWrap.hidden = false;
+  function syncFeeAndSectionFields(root) {
+    // v2.11: show yearly or monthly fields and the read-only committed fee (calculated, never typed).
+    var typ = $('[name=feeType]', root);
+    if (!typ) return;
+    var monthly = typ.value === 'monthly';
+    $$('.fee-m', root).forEach(function (el) { el.hidden = !monthly; });
+    $$('.fee-y', root).forEach(function (el) { el.hidden = monthly; });
+    var out = $('#commit-out', root), hint = $('#commit-hint', root);
+    var per = +(($('[name=monthlyFee]', root) || {}).value || 0), months = parseInt(($('[name=feeMonths]', root) || {}).value, 10), yearly = +(($('[name=yearlyFee]', root) || {}).value || 0);
+    if (monthly) {
+      var ok = per > 0 && months >= 1 && months <= 24;
+      out.textContent = ok ? inr(round2(per * months)) : '—';
+      hint.textContent = ok ? inr(per) + ' × ' + months + ' ' + t('months') + ' = ' + inr(round2(per * months)) : t('Enter the amount per month and number of months.');
+    } else {
+      out.textContent = yearly > 0 ? inr(round2(yearly)) : '—';
+      hint.textContent = t('Yearly payers: committed fee = yearly fee. Sibling discount and van fee are added on receipts.');
     }
-    if (hint) hint.textContent = isNur ? 'Optional for Nursery. If left blank, pending dues use yearly fee ÷ 12.' : (monWrap && !monWrap.hidden ? 'This child already has a monthly fee from earlier. Yearly fee ÷ 12 is used for dues once a yearly fee is entered. You can clear the monthly amount if you want.' : 'For this class, pending dues use yearly fee ÷ 12.');
   }
   function openStudentForm(s, pre, onSaved) {
     openModal({
@@ -1602,6 +1664,7 @@
         }
         if (dob) { dob.addEventListener('input', upd); dob.addEventListener('change', upd); upd(); }
         syncFeeAndSectionFields(root);
+        ['feeType', 'monthlyFee', 'feeMonths', 'yearlyFee'].forEach(function (k) { var el = $('[name=' + k + ']', root); if (el) { el.addEventListener('input', function () { syncFeeAndSectionFields(root); }); el.addEventListener('change', function () { syncFeeAndSectionFields(root); }); } });
         bindPhotoPicker(root, s);
       },
       onSubmit: function (form, fd) {
@@ -1636,14 +1699,17 @@
         d.parentName = d.guardianName || d.motherName || d.fatherName || (s && s.parentName) || '';
         d.phone = d.guardianPhone || d.motherPhone || d.fatherPhone || (s && s.phone) || '';
         if (isAdmin()) {
-          var yf = g('yearlyFee'), mfField = form.querySelector('[name=monthlyFee]'), mf = mfField ? g('monthlyFee') : '';
-          if (yf !== '' && (!isFinite(+yf) || +yf < 0)) { fieldError(form, 'yearlyFee', 'Yearly fee must be 0 or more'); ok = false; }
-          d.yearlyFee = yf === '' ? 0 : Math.round(+yf * 100) / 100;
-          if (mfField && !mfField.closest('.field').hidden) {
-            if (mf !== '' && (!isFinite(+mf) || +mf < 0)) { fieldError(form, 'monthlyFee', 'Fee must be 0 or more'); ok = false; }
-            d.monthlyFee = mf === '' ? 0 : Math.round(+mf * 100) / 100;
+          // v2.11: yearly payer → yearly fee only; monthly payer → amount per month × number of months.
+          d.feeType = g('feeType') === 'monthly' ? 'monthly' : 'yearly';
+          if (d.feeType === 'monthly') {
+            var mf = g('monthlyFee'), fm = g('feeMonths');
+            if (!(isFinite(+mf) && +mf > 0 && +mf <= 1000000)) { fieldError(form, 'monthlyFee', t('Enter the amount per month')); ok = false; }
+            if (!/^\d{1,2}$/.test(fm) || +fm < 1 || +fm > 24) { fieldError(form, 'feeMonths', t('Enter the number of months (1–24)')); ok = false; }
+            d.monthlyFee = Math.round(+mf * 100) / 100; d.feeMonths = parseInt(fm, 10) || null; d.yearlyFee = 0;
           } else {
-            d.monthlyFee = s ? num(s.monthlyFee) : 0;
+            var yf = g('yearlyFee');
+            if (yf !== '' && (!isFinite(+yf) || +yf < 0)) { fieldError(form, 'yearlyFee', 'Yearly fee must be 0 or more'); ok = false; }
+            d.yearlyFee = yf === '' ? 0 : Math.round(+yf * 100) / 100; d.monthlyFee = 0; d.feeMonths = null;
           }
         }
         if (sectionList().indexOf(d.section) < 0 && !(s && s.section === d.section && d.section)) d.section = d.section || '';
@@ -1688,16 +1754,22 @@
       }
     });
   }
+  function commitBoxHTML(ci) {
+    return '<div class="commit-box"><div><span>' + esc(t('Commitment')) + '</span><b>' + inr(ci.commitment) + '</b><small>' + esc(fmtMonth(ci.from)) + ' – ' + esc(fmtMonth(ci.to)) + '</small></div>' +
+      '<div><span>' + esc(t('Paid (till date)')) + '</span><b class="green-t">' + inr(ci.paid) + '</b></div>' +
+      '<div><span>' + esc(t('Balance')) + '</span><b class="' + (ci.balance > 0 ? 'coral-t' : 'green-t') + '">' + inr(ci.balance) + '</b>' + (ci.fines > 0 ? '<small>' + esc(t('incl. late fees')) + ' ' + inr(ci.fines) + '</small>' : '') + '</div></div>';
+  }
   function canSeeStudent(s) { return s && (isAdmin() || s.classId === ME.classId); }
   function viewStudent(id) {
     var s = studentById(id);
     if (!canSeeStudent(s)) return;
     var ym = thisMonth(), n = daysInMonth(ym), c = { P: 0, A: 0, L: 0, H: 0 };
-    for (var d = 1; d <= n; d++) { var v = attFor(ym + '-' + String(d).padStart(2, '0'))[s.id]; if (c[v] != null) c[v]++; }
+    for (var d = 1; d <= n; d++) { var dd = ym + '-' + String(d).padStart(2, '0'); if (offDay(dd)) continue; var v = attFor(dd)[s.id]; if (c[v] != null) c[v]++; }
+    var ci = isAdmin() ? commitInfo(s) : null;
     var row = function (k, v) { return '<div class="kv"><span>' + k + '</span><b>' + v + '</b></div>'; };
     var stTag = s.status === 'Left' ? ' · <span class="tag">Left</span>' : (s.status === 'Inactive' ? ' · <span class="tag inactive">Inactive</span>' : '');
     var body = '<div class="profile" style="--c:' + CLASS_BY_ID[s.classId].color + '">' + avatarHTML(s) + '<div><h3>' + esc(s.name) + '</h3><p>' + esc(classLabel(s)) + ' · ' + esc(ageText(s.dob)) + stTag + '</p></div></div>' +
-      '<div class="kvs">' + row('Date of birth', fmtDate(s.dob)) + row('Admission date', fmtDate(s.admissionDate)) +
+      '<div class="kvs">' + row(t('Enrollment no.'), s.enrollNo ? '<span class="enr-big">' + esc(s.enrollNo) + '</span>' : '<span class="muted">' + esc(t('Being assigned…')) + '</span>') + row('Date of birth', fmtDate(s.dob)) + row('Admission date', fmtDate(s.admissionDate)) +
       (s.motherName || s.motherPhone ? row('Mother', esc(s.motherName || '—') + (s.motherPhone ? ' · ' : '')) + (s.motherPhone ? row('Mother’s mobile', phoneLinks(s.motherPhone)) : '') : '') +
       (s.fatherName || s.fatherPhone ? row('Father', esc(s.fatherName || '—') + (s.fatherPhone ? ' · ' : '')) + (s.fatherPhone ? row('Father’s mobile', phoneLinks(s.fatherPhone)) : '') : '') +
       (s.guardianName || s.guardianPhone ? row('Guardian', esc(s.guardianName || '—')) + (s.guardianPhone ? row('Guardian’s mobile', phoneLinks(s.guardianPhone)) : '') : '') +
@@ -1705,7 +1777,9 @@
       (!(s.motherPhone || s.fatherPhone || s.guardianPhone) ? row('Phone', phoneLinks(primaryPhone(s), s.whatsapp)) : '') +
       (s.whatsapp ? row('WhatsApp', esc(s.whatsapp)) : '') +
       (s.address ? row('Address', esc(s.address)) : '') +
-      (isAdmin() ? row('Yearly fee', num(s.yearlyFee) ? inr(s.yearlyFee) : '—') : '') +
+      (isAdmin() ? row(t('Fee type'), feeTypeOf(s) === 'monthly' ? esc(t('Monthly')) + ' · ' + inr(s.monthlyFee) + ' × ' + (feeMonthsOf(s) ? feeMonthsOf(s) + ' ' + esc(t('months')) : '<span class="coral-t">' + esc(t('months not set')) + '</span>') : esc(t('Yearly'))) : '') +
+      (isAdmin() ? row(t('Committed fee'), committedFee(s) != null ? inr(committedFee(s)) : '—') : '') +
+      (isAdmin() && feeTypeOf(s) !== 'monthly' ? row('Yearly fee', num(s.yearlyFee) ? inr(s.yearlyFee) : '—') : '') +
       (isAdmin() ? row('Monthly fee', effectiveMonthly(s) ? inr(effectiveMonthly(s)) + (num(s.yearlyFee) && !(s.classId === 'nursery' && num(s.monthlyFee) > 0) ? ' <small class="muted">(yearly ÷ 12)</small>' : (s.classId === 'nursery' && num(s.monthlyFee) > 0 ? ' <small class="muted">(nursery)</small>' : '')) : '—') : '') +
       (isAdmin() && s.vanId && vanById(s.vanId) ? row('Van', esc(vanById(s.vanId).name) + (num(s.vanFee) ? ' · ' + inr(s.vanFee) + ' / month' + (isMonth(s.vanFrom) ? ' from ' + esc(fmtMonth(s.vanFrom)) : '') : '')) : '') +
       (isAdmin() && !s.vanId && num(s.vanFee) > 0 && isMonth(s.vanTo) ? row('Van', 'Ended ' + esc(fmtMonth(s.vanTo)) + ' · ' + inr(s.vanFee) + ' / month until then') : '') +
@@ -1717,7 +1791,7 @@
       '<h4>Attendance in ' + esc(fmtMonth(ym)) + '</h4><div class="att-sum">' + ATT_KEYS.map(function (k) { return '<span class="att-chip ' + ATT[k].cls + '">' + ATT[k].label + ' <b>' + c[k] + '</b></span>'; }).join('') + '</div>';
     if (isAdmin()) {
       var pays = S.payments.filter(function (p) { return p.studentId === s.id; }).sort(function (a, b) { return a.month < b.month ? 1 : -1; });
-      body += '<div class="row between"><h4>Fees</h4>' + (pays.length ? '<button class="btn small ghost" data-act="student-receipts" data-id="' + esc(s.id) + '">🧾 All receipts (' + pays.length + ')</button>' : '') + '</div><p>Pending (all months): <b class="coral-t">' + inr(outstanding(s)) + '</b></p>' +
+      body += '<div class="row between"><h4>Fees</h4>' + (pays.length ? '<button class="btn small ghost" data-act="student-receipts" data-id="' + esc(s.id) + '">🧾 All receipts (' + pays.length + ')</button>' : '') + '</div>' + (ci ? commitBoxHTML(ci) : '') + '<p>Pending (all months): <b class="coral-t">' + inr(outstanding(s)) + '</b></p>' +
         (pays.length ? '<ul class="mini-list">' + pays.slice(0, 6).map(function (p) { return '<li><span><b>' + esc(periodText(p)) + '</b><small>' + esc(p.receiptNo) + ' · ' + fmtDate(p.paidOn) + ' · ' + esc(p.mode) + '</small></span><span><b>' + inr(p.amount) + '</b> <button class="icon-btn" data-act="receipt-view" data-id="' + esc(p.id) + '" title="Receipt">🧾</button></span></li>'; }).join('') + '</ul>' : '<p class="muted">No payments yet.</p>');
     }
     if (isAdmin()) body += '<div id="student-parent-box">' + studentParentHTML(s) + '</div>';
@@ -1766,15 +1840,10 @@
     var dr = getDraft(UI.attClass, UI.attDate);
     var saved = Object.keys(attFor(UI.attDate)).some(function (id) { return list.some(function (s) { return s.id === id; }); });
     var off = offDay(UI.attDate);
-    if (off && !saved && !dr.dirty && !UI.attForce[UI.attDate]) {
-      var evs = eventsOn(UI.attDate);
-      return html + '<div class="holiday-box"><div class="hb-icon">🎉</div><h3>' + esc(off) + '</h3><p>' + fmtDate(UI.attDate) + ' is a school holiday, so no attendance is needed.</p>' +
-        (evs.length ? '<p class="muted small">Event: ' + esc(evs.map(function (e) { return e.title; }).join(', ')) + '</p>' : '') +
-        '<div class="row gap wrap center-row"><button type="button" class="btn ghost" data-act="att-prevday">← Last school day</button><button type="button" class="btn small ghost" data-act="att-force">Mark anyway</button></div></div>';
-    }
+    if (off) return html + holidayBoxHTML(UI.attDate, saved);
     html += '<div class="att-head"><div><b>' + fmtDate(UI.attDate) + '</b> · ' + esc(new Intl.DateTimeFormat('en-IN', { weekday: 'long' }).format(new Date(UI.attDate + 'T12:00:00'))) +
       (off ? ' <span class="tag">' + esc(off) + '</span>' : '') + '<br><small id="att-status" class="' + (dr.dirty ? 'warn-t' : 'muted') + '">' + (dr.dirty ? '● Unsaved changes' : saved ? '✓ Saved' : 'Not marked yet') + '</small></div>' +
-      '<button type="button" class="btn ghost" data-act="att-all">✔ Mark all present</button></div>';
+      '<span class="row gap wrap">' + (isAdmin() ? '<button type="button" class="btn ghost small" data-act="pubhol-add" data-date="' + esc(UI.attDate) + '">🎉 ' + esc(t('Public holiday')) + '</button>' : '') + '<button type="button" class="btn ghost" data-act="att-all">✔ Mark all present</button></span></div>';
     html += '<div id="att-counts" class="att-sum">' + attCountsHTML(UI.attClass, dr.data) + '</div>';
     html += '<div class="roster">' + list.map(function (s) {
       var cur = dr.data[s.id];
@@ -1784,6 +1853,39 @@
     }).join('') + '</div>';
     html += '<div class="sticky-save"><button type="button" class="btn primary big block" data-act="att-save">💾 Save attendance</button></div>';
     return html;
+  }
+  // v2.11: Sundays and holidays are never marked (not working days, never absent).
+  function holidayBoxHTML(date, savedMarks) {
+    var off = offDay(date), h = holidayOn(date), evs = eventsOn(date), sun = weekday(date) === 0;
+    return '<div class="holiday-box"><div class="hb-icon">' + (sun && !h ? '☀️' : '🎉') + '</div><h3>' + esc(sun && !h ? t('Sunday') : off) + '</h3><p>' + esc(fmtDate(date)) + ' — ' + esc(sun && !h ? t('Sundays are holidays. No attendance is needed.') : t('School holiday. No attendance is needed.')) + '</p>' +
+      (h && h.note ? '<p class="muted small">' + esc(h.note) + '</p>' : '') +
+      (evs.length ? '<p class="muted small">Event: ' + esc(evs.map(function (e) { return e.title; }).join(', ')) + '</p>' : '') +
+      (savedMarks ? '<p class="small warn-t">' + esc(t('Marks saved earlier for this day are kept but not counted — the day counts as a holiday.')) + '</p>' : '') +
+      '<div class="row gap wrap center-row"><button type="button" class="btn ghost" data-act="att-prevday">← Last school day</button>' +
+      (h && isAdmin() ? '<button type="button" class="btn small ghost" data-act="hol-edit" data-id="' + esc(h.id) + '">✏️ ' + esc(t('Edit holiday')) + '</button>' : '') + '</div></div>';
+  }
+  function openPublicHolidayForm(date) {
+    if (!isAdmin()) return;
+    if (!isISODate(date)) date = todayISO();
+    openModal({
+      title: '🎉 ' + t('Public holiday'),
+      body: '<form class="form" novalidate>' + field(t('Date') + ' *', '<input type="date" name="date" value="' + esc(date) + '" required>') +
+        field(t('Reason (optional)'), '<input name="reason" maxlength="80" placeholder="' + esc(t('e.g. Election, heavy rain')) + '">', '<small class="hint">' + esc(t('Leave blank to show “Public holiday”. Staff and student attendance skip this day; it counts as a holiday, not absent.')) + '</small>') +
+        '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">' + esc(t('Mark as holiday')) + '</button></div></form>',
+      onSubmit: function (form, fd) {
+        var d = String(fd.get('date') || '').trim(), reason = String(fd.get('reason') || '').trim().replace(/\s+/g, ' ');
+        if (!isISODate(d)) { fieldError(form, 'date', 'Choose a date'); return false; }
+        if (holidayOn(d)) { fieldError(form, 'date', 'This day is already a holiday: ' + (holidayOn(d).title || 'Holiday')); return false; }
+        if (weekday(d) === 0) { fieldError(form, 'date', t('Sundays are holidays already')); return false; }
+        S.holidays.push({ id: uid(), type: 'Holiday', kind: 'public', title: reason || 'Public holiday', from: d, to: d, note: '', createdAt: new Date().toISOString() });
+        persist('holidays');
+        Object.keys(UI.drafts).forEach(function (k) { if (k.split('|')[1] === d) delete UI.drafts[k]; });
+        if (UI.sattDraft && UI.sattDraft.date === d) UI.sattDraft = null;
+        toast((reason || t('Public holiday')) + ' · ' + fmtDate(d));
+        render();
+        return true;
+      }
+    });
   }
   function attCountsHTML(cid, data) {
     var c = attStats(cid, null, data), un = c.total - c.marked;
@@ -1801,6 +1903,7 @@
   function saveAttendance() {
     var cid = UI.attClass, date = UI.attDate, dr = getDraft(cid, date);
     if (date > todayISO()) { toast('Can’t mark attendance for a future date', 'err'); return Promise.resolve(false); }
+    if (offDay(date)) { toast(offDay(date) + ' — ' + t('no attendance on holidays'), 'err'); dr.dirty = false; render(); return Promise.resolve(true); }
     var list = activeStudents(cid);
     var marked = list.filter(function (s) { return dr.data[s.id]; }).length;
     var go = marked < list.length ? confirmBox((list.length - marked) + ' student(s) are not marked yet. Save anyway?', { ok: 'Save', danger: false, title: 'Some students unmarked' }) : Promise.resolve(true);
@@ -1823,24 +1926,28 @@
     var n = daysInMonth(ym), today = todayISO(), days = [];
     for (var d = 1; d <= n; d++) days.push(ym + '-' + String(d).padStart(2, '0'));
     var wd = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-    var head = '<tr><th class="sticky-col">Student</th>' + days.map(function (iso) { var w = weekday(iso); return '<th class="' + (w === 0 ? 'sun' : holidayOn(iso) ? 'hol' : '') + '">' + (+iso.slice(8)) + '<small>' + wd[w] + '</small></th>'; }).join('') + '<th>P</th><th>A</th><th>L</th><th>H</th><th>%</th></tr>';
+    var head = '<tr><th class="sticky-col">Student</th>' + days.map(function (iso) { var w = weekday(iso); return '<th class="' + (w === 0 ? 'sun' : holidayOn(iso) ? 'hol' : '') + '">' + (+iso.slice(8)) + '<small>' + wd[w] + '</small></th>'; }).join('') + '<th>P</th><th>A</th><th>L</th><th>H</th><th title="Sundays + holidays">Hol</th><th>%</th></tr>';
+    var offCount = days.filter(function (iso) { return iso <= today && offDay(iso); }).length;
     var body = list.map(function (s) {
       var c = { P: 0, A: 0, L: 0, H: 0 }, m = 0;
       var cells = days.map(function (iso) {
         if (iso > today) return '<td class="fut"></td>';
+        var hol = holidayOn(iso);
+        if (hol) return '<td class="hol" title="' + esc(hol.title || 'Holiday') + '">🎉</td>';
+        if (weekday(iso) === 0) return '<td class="sun" title="Sunday">S</td>';
         var v = attFor(iso)[s.id];
         if (v && c[v] != null) { c[v]++; m++; }
-        var hol = !v && holidayOn(iso);
-        return '<td class="' + (v ? 'mc ' + ATT[v].cls : (weekday(iso) === 0 ? 'sun' : hol ? 'hol' : '')) + '"' + (hol ? ' title="' + esc(hol.title || 'Holiday') + '"' : '') + '>' + (v || (hol ? '🎉' : '')) + '</td>';
+        return '<td class="' + (v ? 'mc ' + ATT[v].cls : '') + '">' + (v || '') + '</td>';
       }).join('');
       var pct = m ? Math.round((c.P + 0.5 * c.H) / m * 100) + '%' : '—';
-      return '<tr><th class="sticky-col">' + esc(s.name) + '</th>' + cells + '<td class="tot">' + c.P + '</td><td class="tot">' + c.A + '</td><td class="tot">' + c.L + '</td><td class="tot">' + c.H + '</td><td class="tot"><b>' + pct + '</b></td></tr>';
+      return '<tr><th class="sticky-col">' + esc(s.name) + '</th>' + cells + '<td class="tot">' + c.P + '</td><td class="tot">' + c.A + '</td><td class="tot">' + c.L + '</td><td class="tot">' + c.H + '</td><td class="tot">' + offCount + '</td><td class="tot"><b>' + pct + '</b></td></tr>';
     }).join('');
-    return '<p class="muted small">P = Present · A = Absent · L = Leave · H = Half-day · 🎉 = holiday. Working days: ' + workingDays(ym).length + '. Scroll sideways to see all days.</p><div class="table-wrap scroll-x"><table class="month-grid"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    return '<p class="muted small">P = Present · A = Absent · L = Leave · H = Half-day · S = Sunday · 🎉 = holiday (Hol = Sundays + holidays, never absent). Working days: ' + workingDays(ym).length + '. Scroll sideways to see all days.</p><div class="table-wrap scroll-x"><table class="month-grid"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
   }
   function absentListHTML(which, date) {
     var cids = which === 'all' ? CLASSES.map(function (c) { return c.id; }) : [which];
     var rec = attFor(date), any = false;
+    if (offDay(date)) return holidayBoxHTML(date, false);
     var html = cids.map(function (cid) {
       var list = activeStudents(cid);
       if (!list.length) return '';
@@ -1934,19 +2041,36 @@
     return alloc;
   }
   function monthsFrom(ym, n) { var out = []; for (var i = 0; i < n; i++) out.push(addMonths(ym, i)); return out; }
+  // v2.11: months a yearly payer's amount goes to — the first unpaid months, in order.
+  function autoPayMonths(s, amount) {
+    var ci = commitInfo(s), start = feeStart(s), end = ci && ci.to > thisMonth() ? ci.to : thisMonth(), out = [], acc = 0;
+    for (var m = start, i = 0; m <= end && i < 72; m = addMonths(m, 1), i++) {
+      var d = dueFor(s, m);
+      if (d > 0) { out.push(m); acc = round2(acc + d); if (acc >= amount) break; }
+    }
+    if (!out.length) out = [ci && ci.from > thisMonth() ? ci.from : thisMonth()];
+    return out;
+  }
+  function firstDueMonth(s) {
+    var ci = commitInfo(s), start = feeStart(s), end = ci && ci.to > thisMonth() ? ci.to : addMonths(thisMonth(), 11);
+    for (var m = start, i = 0; m <= end && i < 72; m = addMonths(m, 1), i++) if (dueFor(s, m) > 0) return m;
+    return thisMonth();
+  }
   function openPaymentForm(studentId, month) {
     var studs = activeStudents();
     if (!studs.length) { toast('Add a student first', 'err'); return; }
-    var groups = CLASSES.map(function (c) {
-      var l = studs.filter(function (s) { return s.classId === c.id; });
-      return l.length ? '<optgroup label="' + esc(c.name) + '">' + l.map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === studentId ? ' selected' : '') + '>' + esc(s.name) + ' — ' + esc(primaryName(s) || '') + '</option>'; }).join('') + '</optgroup>' : '';
-    }).join('');
+    var pre = studentId ? studentById(studentId) : null;
+    var clsOpts = CLASSES.filter(function (c) { return studs.some(function (x) { return x.classId === c.id; }); }).map(function (c) { return { value: c.id, label: c.name }; });
     var r = nextReceiptNo();
     var body = '<form class="form" novalidate><div class="grid2">' +
-      field('Student *', '<select name="studentId" required><option value="">Select student</option>' + groups + '</select>', '', 'span2') +
-      field('Fee for month *', '<input type="month" name="month" value="' + esc(month || UI.feeMonth || thisMonth()) + '" required>') +
-      field('Months covered', '<select name="count">' + options([1, 2, 3, 4, 5, 6, 9, 12].map(function (n) { return { value: String(n), label: n === 1 ? '1 month' : n + ' months' }; }), '1') + '</select>', '<small class="hint">For a term / advance payment</small>') +
-      field('Amount (₹) *', '<input type="number" name="amount" min="1" max="1000000" step="1" inputmode="numeric" required>') +
+      field(t('Class') + ' *', '<select name="payClass" data-nodirty>' + options(clsOpts, pre ? pre.classId : '', t('Select class')) + '</select>') +
+      field(t('Section'), '<select name="paySection" data-nodirty></select>') +
+      field(t('Student') + ' *', '<select name="studentId" required></select>', '', 'span2') +
+      '<div class="span2" id="pay-info"></div>' +
+      field(t('Amount per month'), '<div class="ro-field" id="pay-per">—</div>', '', 'pm') +
+      field(t('From month') + ' *', '<input type="month" name="month" value="' + esc(month || thisMonth()) + '">', '', 'pm') +
+      field(t('Months paying') + ' *', '<select name="count">' + options([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(function (n) { return { value: String(n), label: n === 1 ? '1 ' + t('month') : n + ' ' + t('months') }; }), '1') + '</select>', '', 'pm') +
+      field(t('Amount') + ' (₹) *', '<input type="number" name="amount" min="1" max="1000000" step="1" inputmode="numeric" required>', '<small class="hint" id="pay-alloc"></small>') +
       field('Payment mode *', '<select name="mode">' + options(PAY_MODES, 'Cash') + '</select>') +
       field('Paid on *', '<input type="date" name="paidOn" max="' + todayISO() + '" value="' + todayISO() + '" required>') +
       field('Reference (UPI / bank ref, optional)', '<input name="ref" maxlength="60">') +
@@ -1954,48 +2078,99 @@
       '</div><p id="due-hint" class="callout" hidden></p>' + field('Note', '<input name="note" maxlength="200" placeholder="e.g. Admission fee, books">') +
       '<div class="form-actions"><button type="button" class="btn ghost" data-act="modal-close">Cancel</button><button class="btn primary">Save &amp; get receipt</button></div></form>';
     openModal({
-      title: 'Record fee payment', size: 'wide', body: body,
+      title: t('Record payment'), size: 'wide', body: body,
       mount: function (root) {
-        var sel = $('[name=studentId]', root), mon = $('[name=month]', root), cnt = $('[name=count]', root), amt = $('[name=amount]', root), hint = $('#due-hint', root), amtTouched = false;
-        amt.addEventListener('input', function () { amtTouched = true; });
+        var csel = $('[name=payClass]', root), ssel = $('[name=paySection]', root), sel = $('[name=studentId]', root), mon = $('[name=month]', root), cnt = $('[name=count]', root), amt = $('[name=amount]', root);
+        var hint = $('#due-hint', root), info = $('#pay-info', root), allocH = $('#pay-alloc', root), amtTouched = false, lastSid = '';
+        amt.addEventListener('input', function (e) { if (e.isTrusted) amtTouched = true; updAlloc(); });
+        function fillSections(keep) {
+          var l = studs.filter(function (x) { return x.classId === csel.value; }), secs = [];
+          l.forEach(function (x) { if (x.section && secs.indexOf(x.section) < 0) secs.push(x.section); });
+          secs.sort();
+          ssel.innerHTML = '<option value="">' + esc(t('All sections')) + '</option>' + secs.map(function (x) { return '<option value="' + esc(x) + '">' + esc(secLabel(x)) + '</option>'; }).join('');
+          if (keep && secs.indexOf(keep) >= 0) ssel.value = keep;
+          ssel.disabled = !secs.length;
+        }
+        function fillStudents(keep) {
+          var l = studs.filter(function (x) { return x.classId === csel.value && (!ssel.value || x.section === ssel.value); }).sort(byName);
+          sel.innerHTML = '<option value="">' + esc(csel.value ? t('Select student') : t('Choose the class first')) + '</option>' + l.map(function (x) { return '<option value="' + esc(x.id) + '">' + esc(x.name) + (x.enrollNo ? ' · ' + esc(x.enrollNo) : '') + (primaryName(x) ? ' — ' + esc(primaryName(x)) : '') + '</option>'; }).join('');
+          if (keep && l.some(function (x) { return x.id === keep; })) sel.value = keep;
+        }
+        function isMonthly(s) { return s && feeTypeOf(s) === 'monthly'; }
+        function selMonths(s, amount) { return isMonthly(s) ? monthsFrom(mon.value, parseInt(cnt.value, 10) || 1) : autoPayMonths(s, amount || 0); }
+        function updAlloc() {
+          var s = studentById(sel.value);
+          if (!s || isMonthly(s)) { allocH.textContent = ''; return; }
+          var ms = selMonths(s, +amt.value || 0);
+          allocH.textContent = +amt.value > 0 ? t('Counted for') + ': ' + (window.LWReceipt ? window.LWReceipt.period(ms) : fmtMonth(ms[0])) : '';
+          updCommit(s);
+        }
+        function updCommit(s) {
+          var ci = commitInfo(s), a = +amt.value || 0;
+          info.innerHTML = '<div class="pay-who"><b>' + esc(s.name) + '</b> · ' + esc(classLabel(s)) + (s.enrollNo ? ' · <span class="enr">' + esc(s.enrollNo) + '</span>' : '') + ' · ' + esc(isMonthly(s) ? t('Monthly') + (feeMonthsOf(s) ? ' × ' + feeMonthsOf(s) : '') : t('Yearly')) + '</div>' +
+            (ci ? commitBoxHTML(ci) + (a > 0 ? '<p class="small muted">' + esc(t('Balance after this payment')) + ': <b>' + inr(Math.max(0, round2(ci.balance - a))) + '</b></p>' : '')
+              : (isMonthly(s) ? '<p class="small warn-t">' + esc(t('Number of months is not set for this student — edit the student to set it, so the commitment can be shown.')) + '</p>' : ''));
+        }
         function upd() {
           var s = studentById(sel.value);
-          if (!s || !isMonth(mon.value)) { hint.hidden = true; return; }
-          var ms = monthsFrom(mon.value, parseInt(cnt.value, 10) || 1);
-          var fee = ms.reduce(function (a, m) { return a + (feeApplies(s, m) ? netMonth(s, m) : 0); }, 0), paid = ms.reduce(function (a, m) { return a + paidFor(s.id, m); }, 0), due = ms.reduce(function (a, m) { return a + dueFor(s, m); }, 0);
-          var van = ms.reduce(function (a, m) { return a + (feeApplies(s, m) ? vanMonth(s, m) : 0); }, 0);
-          var fine = ms.reduce(function (a, m) { return a + fineFor(s, m); }, 0), disc = siblingDiscount(s);
-          hint.hidden = false;
-          hint.innerHTML = '<b>' + esc(s.name) + '</b> · ' + esc(window.LWReceipt ? window.LWReceipt.period(ms) : fmtMonth(mon.value)) + ': fee ' + inr(fee) + (disc ? ' <small>(sibling −' + inr(disc) + '/month)</small>' : '') + (van ? ' + van ' + inr(van) : '') + (fine ? ' + late fee ' + inr(fine) : '') + ' · paid ' + inr(paid) + ' · <b>due ' + inr(due) + '</b>' + (mon.value < admMonth(s) ? '<br><small class="warn-t">This month is before the admission date (' + fmtDate(s.admissionDate) + ').</small>' : '');
-          if (!amtTouched) amt.value = due > 0 ? due : '';
+          $$('.pm', root).forEach(function (el) { el.hidden = !isMonthly(s); });
+          if (!s) { hint.hidden = true; info.innerHTML = ''; allocH.textContent = ''; return; }
+          if (s.id !== lastSid) { lastSid = s.id; if (isMonthly(s) && !month) mon.value = firstDueMonth(s); }
+          $('#pay-per', root).textContent = isMonthly(s) ? inr(netMonthly(s)) + (siblingDiscount(s) ? ' (' + t('after sibling discount') + ')' : '') : '—';
+          if (isMonthly(s)) {
+            if (!isMonth(mon.value)) { hint.hidden = true; return; }
+            var ms = selMonths(s), fee = ms.reduce(function (x, m) { return x + (feeApplies(s, m) ? netMonth(s, m) : 0); }, 0), paid = ms.reduce(function (x, m) { return x + paidFor(s.id, m); }, 0), due = ms.reduce(function (x, m) { return x + dueFor(s, m); }, 0);
+            var van = ms.reduce(function (x, m) { return x + (feeApplies(s, m) ? vanMonth(s, m) : 0); }, 0), fine = ms.reduce(function (x, m) { return x + fineFor(s, m); }, 0);
+            hint.hidden = false;
+            hint.innerHTML = esc(window.LWReceipt ? window.LWReceipt.period(ms) : fmtMonth(mon.value)) + ': fee ' + inr(fee) + (van ? ' + van ' + inr(van) : '') + (fine ? ' + late fee ' + inr(fine) : '') + ' · paid ' + inr(paid) + ' · <b>due ' + inr(due) + '</b>' + (mon.value < admMonth(s) ? '<br><small class="warn-t">This month is before the admission date (' + fmtDate(s.admissionDate) + ').</small>' : '');
+            if (!amtTouched) amt.value = due > 0 ? due : '';
+          } else {
+            var dueAll = outstanding(s);
+            hint.hidden = false;
+            hint.innerHTML = t('Pending now') + ': <b>' + inr(dueAll) + '</b>. ' + esc(t('Enter the amount the parent paid; it is counted for the first unpaid months.'));
+            if (!amtTouched) amt.value = dueAll > 0 ? dueAll : '';
+          }
+          updCommit(s); updAlloc();
         }
-        sel.addEventListener('change', upd); mon.addEventListener('change', upd); cnt.addEventListener('change', upd); upd();
+        csel.addEventListener('change', function () { fillSections(); fillStudents(); upd(); });
+        ssel.addEventListener('change', function () { fillStudents(sel.value); upd(); });
+        sel.addEventListener('change', function () { amtTouched = false; upd(); });
+        mon.addEventListener('change', upd); cnt.addEventListener('change', upd);
+        if (csel.value) { fillSections(pre && pre.section); fillStudents(pre && pre.id); } else fillStudents();
+        upd();
       },
       onSubmit: function (form, fd) {
         var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
         var ok = true, s = studentById(g('studentId')), amount = +g('amount');
+        var monthly = s && feeTypeOf(s) === 'monthly';
         if (!s) { fieldError(form, 'studentId', 'Please choose a student'); ok = false; }
-        if (!isMonth(g('month'))) { fieldError(form, 'month', 'Please choose the fee month'); ok = false; }
+        if (monthly && !isMonth(g('month'))) { fieldError(form, 'month', 'Please choose the fee month'); ok = false; }
         if (!(amount > 0) || amount > 1000000) { fieldError(form, 'amount', 'Enter an amount greater than ₹0'); ok = false; }
         if (PAY_MODES.indexOf(g('mode')) < 0) { fieldError(form, 'mode', 'Choose a payment mode'); ok = false; }
         if (!isISODate(g('paidOn')) || g('paidOn') > todayISO()) { fieldError(form, 'paidOn', 'Choose a valid date (not in the future)'); ok = false; }
         if (!ok) return false;
         var n = parseInt(g('count'), 10); if (!(n >= 1 && n <= 12)) n = 1;
-        var ms = monthsFrom(g('month'), n);
+        var ms = monthly ? monthsFrom(g('month'), n) : autoPayMonths(s, amount);
         var due = ms.reduce(function (a, m) { return a + dueFor(s, m); }, 0);
         var fineIn = ms.reduce(function (a, m) { return a + (dueFor(s, m) > 0 ? fineFor(s, m) : 0); }, 0);
-        return (netMonthly(s) && amount > due ? confirmBox('This is more than the amount due for ' + periodText({ months: ms }) + ' (' + inr(due) + '). Save anyway?', { ok: 'Save', danger: false, title: 'Amount more than due' }) : Promise.resolve(true)).then(function (go) {
+        var ci0 = commitInfo(s), over = monthly ? amount > due : (ci0 ? amount > ci0.balance + 0.001 && amount > outstanding(s) : amount > outstanding(s));
+        return (netMonthly(s) && over ? confirmBox('This is more than the amount due (' + inr(monthly ? due : (ci0 ? Math.max(ci0.balance, outstanding(s)) : outstanding(s))) + '). Save anyway?', { ok: 'Save', danger: false, title: 'Amount more than due' }) : Promise.resolve(true)).then(function (go) {
           if (!go) return false;
           var r = nextReceiptNo();
           var amt2 = Math.round(amount * 100) / 100;
           var p = { id: uid(), seq: r.seq, receiptNo: r.no, studentId: s.id, studentName: s.name, parentName: primaryName(s) || '', classId: s.classId, month: ms[0],
             amount: amt2, mode: g('mode'), ref: g('ref'), paidOn: g('paidOn'), note: g('note'), receivedBy: (ME && ME.name) || S.settings.owner || '', monthlyFee: netMonthly(s), yearlyFee: num(s.yearlyFee), createdAt: new Date().toISOString() };
+          if (s.enrollNo) p.enrollNo = s.enrollNo;
+          p.feeType = feeTypeOf(s); if (monthly && feeMonthsOf(s)) p.feeMonths = feeMonthsOf(s);
           if (siblingDiscount(s)) p.discount = siblingDiscount(s);
           var vanIn = vanMonth(s, ms[0]); if (vanIn > 0) p.vanFee = vanIn;
           if (fineIn > 0) p.lateFee = round2(Math.min(fineIn, amt2));
           if (ms.length > 1) { p.months = ms; p.alloc = allocate(s, ms, amt2); }
           S.payments.push(p);
           p.balanceAfter = outstanding(s);
+          // v2.11: commitment snapshot for the receipt (includes this payment).
+          var ci = commitInfo(s);
+          if (ci) { p.commitment = ci.commitment; p.paidToDate = ci.paid; p.commitBalance = ci.balance; if (ci.fines > 0) p.commitFines = ci.fines; p.commitFrom = ci.from; p.commitTo = ci.to; }
           S.settings.receiptSeq = r.seq + 1;
           persist('payments', 'settings');
           toast('Payment saved · ' + p.receiptNo);
@@ -2015,8 +2190,15 @@
       receiptNo: p.receiptNo, date: p.paidOn, studentName: p.studentName, className: (s ? classLabel(s) : className(p.classId)), parentName: p.parentName || (s && primaryName(s)) || '',
       months: payMonths(p), monthlyFee: p.monthlyFee != null ? p.monthlyFee : (s ? effectiveMonthly(s) : 0), yearlyFee: (p.yearlyFee != null ? p.yearlyFee : (s ? s.yearlyFee : 0)), amount: p.amount, mode: p.mode, ref: p.ref,
       balance: bal, balanceLabel: hasSnap ? 'Balance due after this payment' : 'Balance due (as on ' + fmtDate(todayISO()) + ')',
-      receivedBy: p.receivedBy || '', copy: copy || '', discount: num(p.discount), lateFee: num(p.lateFee), vanFee: num(p.vanFee)
+      receivedBy: p.receivedBy || '', copy: copy || '', discount: num(p.discount), lateFee: num(p.lateFee), vanFee: num(p.vanFee),
+      enrollNo: p.enrollNo || (s && s.enrollNo) || '', commit: commitForReceipt(p, s)
     };
+  }
+  // v2.11: Commitment / Paid (till date) / Balance. Saved with the payment; older receipts show today's figures.
+  function commitForReceipt(p, s) {
+    if (p.commitment != null && isFinite(Number(p.commitment))) return { commitment: num(p.commitment), paid: num(p.paidToDate), balance: num(p.commitBalance), fines: num(p.commitFines), label: '' };
+    var ci = s ? commitInfo(s) : null;
+    return ci ? { commitment: ci.commitment, paid: ci.paid, balance: ci.balance, fines: ci.fines, label: 'as on ' + fmtDate(todayISO()) } : null;
   }
   function receiptText(p) { return window.LWReceipt.text(receiptData(p)); }
   function findPayment(id) { return S.payments.filter(function (p) { return p.id === id; })[0]; }
@@ -2320,9 +2502,11 @@
    * ===================================================================== */
   var TPL_FEE = 'Dear {parent}, greetings from {school}. This is a gentle reminder that {child}’s fee of {amount} for {month} is pending. Kindly pay at your earliest convenience. Please ignore if already paid. Thank you! 🙏\n{school}, {phone}';
   var TPL_BDAY = 'Dear {parent}, warm wishes from all of us at {school}! 🎂🎉 Wishing {child} a very Happy Birthday and a wonderful year ahead. 🎈\n– Team {school}, {phone}';
-  var EXP_CATS = ['Rent', 'Electricity', 'Stationery', 'Snacks', 'Water', 'Maintenance', 'Events', 'Transport', 'Other'];
-  var EXP_COLORS = ['#38a8e0', '#ffc93c', '#ff7a6b', '#6cc48a', '#8fd3f4', '#b38df0', '#f7a8c4', '#9aa7b4', '#c9ced6'];
-  var SATT = { P: { label: 'Present', cls: 'p' }, A: { label: 'Absent', cls: 'a' }, H: { label: 'Half-day', cls: 'h' } };
+  var EXP_CATS = ['Rent', 'Electricity', 'Stationery', 'Snacks', 'Water', 'Maintenance', 'Events', 'Transport', 'Application prints', 'Receipt prints', 'Wall decoration', 'Teaching aids', 'Worksheets', 'Other'];
+  var EXP_COLORS = ['#38a8e0', '#ffc93c', '#ff7a6b', '#6cc48a', '#8fd3f4', '#b38df0', '#f7a8c4', '#9aa7b4', '#4fb3a9', '#e8a23a', '#d46fa8', '#7b8fe0', '#a0c94f', '#c9ced6'];
+  // v2.11: casual leave and paid leave for staff.
+  var SATT = { P: { label: 'Present', cls: 'p' }, A: { label: 'Absent', cls: 'a' }, H: { label: 'Half-day', cls: 'h' }, C: { label: 'Casual leave', cls: 'c' }, L: { label: 'Paid leave', cls: 'l' } };
+  var SATT_KEYS = ['P', 'A', 'H', 'C', 'L'];
   function fillTpl(tpl, v) { return String(tpl || '').replace(/\{(\w+)\}/g, function (m, k) { return v[k] != null ? String(v[k]) : m; }); }
   function feeTpl() { return String(S.settings.tplFee || '').trim() || TPL_FEE; }
   function bdayTpl() { return String(S.settings.tplBirthday || '').trim() || TPL_BDAY; }
@@ -2447,23 +2631,39 @@
     var rows = pendingRows(cls);
     var tot = rows.reduce(function (a, x) { a.t += x.total; a.n += x.now; a.o += x.over; return a; }, { t: 0, n: 0, o: 0 });
     var canRemind = rows.filter(function (x) { return x.phone; }).length;
+    // v2.11: commitment (committed fee for the whole period) per student.
+    var commits = activeStudents(cls || undefined).map(function (s) { return { s: s, ci: commitInfo(s) }; }).filter(function (x) { return x.ci; })
+      .sort(function (a, b) { return b.ci.balance - a.ci.balance || byName(a.s, b.s); });
+    var ctot = commits.reduce(function (a, x) { a.c += x.ci.commitment; a.p += x.ci.paid; a.b += x.ci.balance; return a; }, { c: 0, p: 0, b: 0 });
+    ctot = { c: round2(ctot.c), p: round2(ctot.p), b: round2(ctot.b) };
+    var noMonths = activeStudents(cls || undefined).filter(function (s) { return feeTypeOf(s) === 'monthly' && !feeMonthsOf(s); });
+    var commitTable = '<section class="card"><h3>📒 ' + esc(t('Commitment, paid and balance')) + '</h3><p class="muted small">' + esc(t('Commitment = committed fee (monthly: per month × months; yearly: yearly fee) − sibling discount + van fee. Paid counts payments for the months of that period.')) + '</p>' +
+      (commits.length ? '<div class="table-wrap"><table class="table responsive"><thead><tr><th>' + esc(t('Enrollment no.')) + '</th><th>' + esc(t('Student')) + '</th><th>' + esc(t('Fee type')) + '</th><th class="num">' + esc(t('Commitment')) + '</th><th class="num">' + esc(t('Paid')) + '</th><th class="num">' + esc(t('Balance')) + '</th></tr></thead><tbody>' +
+        commits.map(function (x) {
+          return '<tr><td data-label="' + esc(t('Enrollment no.')) + '">' + esc(x.s.enrollNo || '—') + '</td><td data-label="' + esc(t('Student')) + '"><b>' + esc(x.s.name) + '</b> <small class="muted">' + esc(classLabel(x.s)) + '</small></td>' +
+            '<td data-label="' + esc(t('Fee type')) + '">' + esc(x.ci.type === 'monthly' ? t('Monthly') + ' ' + inr(x.ci.perMonth) + ' × ' + x.ci.months : t('Yearly')) + '</td>' +
+            '<td data-label="' + esc(t('Commitment')) + '" class="num">' + inr(x.ci.commitment) + '</td><td data-label="' + esc(t('Paid')) + '" class="num green-t">' + inr(x.ci.paid) + '</td><td data-label="' + esc(t('Balance')) + '" class="num"><b class="' + (x.ci.balance > 0 ? 'coral-t' : 'green-t') + '">' + inr(x.ci.balance) + '</b></td></tr>';
+        }).join('') + '</tbody><tfoot><tr class="tot"><td colspan="3"><b>' + esc(t('Total')) + ' (' + commits.length + ')</b></td><td class="num" data-label="' + esc(t('Commitment')) + '"><b>' + inr(ctot.c) + '</b></td><td class="num" data-label="' + esc(t('Paid')) + '"><b>' + inr(ctot.p) + '</b></td><td class="num" data-label="' + esc(t('Balance')) + '"><b>' + inr(ctot.b) + '</b></td></tr></tfoot></table></div>' : '<p class="muted">' + esc(t('No commitments yet.')) + '</p>') +
+      (noMonths.length ? '<p class="small warn-t">⚠️ ' + esc(t('Monthly payers without number of months')) + ': ' + noMonths.map(function (s) { return '<button type="button" class="link" data-act="student-edit" data-id="' + esc(s.id) + '">' + esc(s.name) + (s.enrollNo ? ' (' + esc(s.enrollNo) + ')' : '') + '</button>'; }).join(', ') + '</p>' : '') + '</section>';
     var html = '<div class="toolbar">' + field('Class', '<select data-change="pend-class">' + options([{ value: '', label: 'All classes' }].concat(CLASSES.map(function (c) { return { value: c.id, label: c.emoji + ' ' + c.name }; })), cls) + '</select>') +
       '<button class="btn wa-btn" data-act="remind-all"' + (canRemind ? '' : ' disabled') + '>' + WA_SVG + ' Remind all (' + canRemind + ')</button></div>';
     html += '<div class="stats">' + stat('👪', 'Students with dues', String(rows.length), cls ? className(cls) : 'All classes', 'sky') +
       stat('📅', fmtMonth(thisMonth()) + ' pending', inr(tot.n), 'This month', 'yellow') +
       stat('⚠️', 'Overdue', inr(tot.o), 'Earlier months', 'coral') +
-      stat('⏳', 'Total pending', inr(tot.t), 'As on ' + fmtDate(todayISO()), 'purple') + '</div>';
+      stat('⏳', 'Total pending', inr(tot.t), 'As on ' + fmtDate(todayISO()), 'purple') +
+      stat('📒', t('Commitment balance'), inr(ctot.b), t('Committed') + ' ' + inr(ctot.c) + ' · ' + t('Paid') + ' ' + inr(ctot.p), 'green') + '</div>';
     html += feeRulesNote();
-    if (!rows.length) return html + emptyState('🎉', 'No pending fees', 'Every student is paid up to ' + fmtMonth(thisMonth()) + '.');
+    if (!rows.length) return html + emptyState('🎉', 'No pending fees', 'Every student is paid up to ' + fmtMonth(thisMonth()) + '.') + commitTable;
     html += '<div class="pf-list">' + rows.map(function (x) {
-      var r = x.rem;
+      var r = x.rem; x.ci = commitInfo(x.s);
       return '<article class="pf-card' + (x.over > 0 ? ' over' : '') + '"><div class="pf-top"><div><b>' + esc(x.s.name) + '</b><small>' + esc(classLabel(x.s)) + ' · ' + esc(primaryName(x.s) || 'Parent') + (x.phone ? ' · ' + esc(x.phone) : '') + '</small></div><b class="pf-amt coral-t">' + inr(x.total) + '</b></div>' +
+        (x.ci ? '<div class="pf-meta pf-commit"><span>' + esc(t('Commitment')) + ' <b>' + inr(x.ci.commitment) + '</b></span><span>' + esc(t('Paid')) + ' <b class="green-t">' + inr(x.ci.paid) + '</b></span><span>' + esc(t('Balance')) + ' <b class="coral-t">' + inr(x.ci.balance) + '</b></span></div>' : '') +
         '<div class="pf-meta"><span>This month <b>' + inr(x.now) + '</b></span>' + (x.over > 0 ? '<span class="warn-t">Earlier <b>' + inr(x.over) + '</b></span>' : '') + '<span>' + esc(window.LWReceipt ? window.LWReceipt.period(x.months) : '') + '</span>' + (x.fine ? '<span>incl. late fee ' + inr(x.fine) + '</span>' : '') + '</div>' +
         '<div class="pf-foot"><small class="muted">' + (r && r.at ? '🔔 Last reminded ' + esc(stampIST(r.at)) + (r.count > 1 ? ' · ' + r.count + ' times' : '') : 'Not reminded yet') + '</small><span class="row gap">' +
         (x.phone ? '<a class="btn small wa-btn" href="' + esc(waHref(x.phone, reminderText(x))) + '" target="_blank" rel="noopener" data-act="remind-one" data-id="' + esc(x.s.id) + '">' + WA_SVG + ' Remind</a>' : '<span class="muted small">No mobile</span>') +
         '<button class="btn small primary" data-act="pay-add" data-student="' + esc(x.s.id) + '" data-month="' + esc(x.months[0] || thisMonth()) + '">Collect</button></span></div></article>';
     }).join('') + '</div>';
-    return html;
+    return html + commitTable;
   }
   var remindQ = null;
   function openRemindAll() {
@@ -2546,14 +2746,16 @@
   function backupSheets(notices) {
     var studs = S.students.slice().sort(function (a, b) { return a.classId === b.classId ? byName(a, b) : CLASSES.map(function (c) { return c.id; }).indexOf(a.classId) - CLASSES.map(function (c) { return c.id; }).indexOf(b.classId); });
     var sheets = [];
-    sheets.push({ name: 'Students', rows: [['Name', 'Class', 'Section', 'Date of birth', 'Mother', 'Mother mobile', 'Father', 'Father mobile', 'Guardian', 'Guardian mobile', 'WhatsApp', 'Address', 'Admission date', 'Status', 'Yearly fee', 'Monthly fee', 'Sibling discount / month', 'Pending now', 'Emergency contact', 'Authorised pickup', 'Medical notes', 'Notes', 'ID']].concat(studs.map(function (s) {
-      return [s.name, className(s.classId), s.section || '', s.dob || '', s.motherName || '', s.motherPhone || '', s.fatherName || '', s.fatherPhone || '', s.guardianName || '', s.guardianPhone || '', s.whatsapp || '', s.address || '', s.admissionDate || '', s.status || 'Active', num(s.yearlyFee), netMonthly(s), siblingDiscount(s), outstanding(s), s.emergency || '', s.pickup || '', s.medical || '', s.notes || '', s.id];
+    sheets.push({ name: 'Students', rows: [['Enrollment no', 'Name', 'Class', 'Section', 'Date of birth', 'Mother', 'Mother mobile', 'Father', 'Father mobile', 'Guardian', 'Guardian mobile', 'WhatsApp', 'Address', 'Admission date', 'Status', 'Fee type', 'Months', 'Committed fee', 'Commitment', 'Paid (till date)', 'Balance', 'Yearly fee', 'Monthly fee', 'Sibling discount / month', 'Pending now', 'Emergency contact', 'Authorised pickup', 'Medical notes', 'Notes', 'ID']].concat(studs.map(function (s) {
+      var ci = commitInfo(s);
+      return [s.enrollNo || '', s.name, className(s.classId), s.section ? secLabel(s.section) : '', s.dob || '', s.motherName || '', s.motherPhone || '', s.fatherName || '', s.fatherPhone || '', s.guardianName || '', s.guardianPhone || '', s.whatsapp || '', s.address || '', s.admissionDate || '', s.status || 'Active', feeTypeOf(s) === 'monthly' ? 'Monthly' : 'Yearly', feeTypeOf(s) === 'monthly' ? (feeMonthsOf(s) || '') : 12, committedFee(s) == null ? '' : committedFee(s), ci ? ci.commitment : '', ci ? ci.paid : '', ci ? ci.balance : '', num(s.yearlyFee), netMonthly(s), siblingDiscount(s), outstanding(s), s.emergency || '', s.pickup || '', s.medical || '', s.notes || '', s.id];
     })) });
     sheets.push({ name: 'Enquiries', rows: [['Date', 'Student', 'Date of birth', 'Father', 'Father mobile', 'Mother', 'Mother mobile', 'Parent (website)', 'Mobile', 'Address', 'Feedback', 'Source', 'Status', 'Follow-up', 'Notes', 'ID']].concat(S.enquiries.slice().sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }).map(function (e) {
       return [e.date || '', e.childName || '', e.dob || '', e.fatherName || '', e.fatherPhone || '', e.motherName || '', e.motherPhone || '', e.parentName || '', e.phone || '', e.address || '', e.feedback || '', e.source || '', isConverted(e) ? 'Admitted' : (e.status || ''), e.followUp || '', e.notes || '', e.id];
     })) });
-    sheets.push({ name: 'Payments', rows: [['Receipt no', 'Paid on', 'Student', 'Class', 'Parent', 'Fee for', 'Amount', 'Late fee incl.', 'Mode', 'Reference', 'Received by', 'Note', 'ID']].concat(S.payments.slice().sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); }).map(function (p) {
-      return [p.receiptNo || '', p.paidOn || '', p.studentName || '', className(p.classId), p.parentName || '', periodText(p), num(p.amount), num(p.lateFee) || '', p.mode || '', p.ref || '', p.receivedBy || '', p.note || '', p.id];
+    sheets.push({ name: 'Payments', rows: [['Receipt no', 'Paid on', 'Enrollment no', 'Student', 'Class', 'Parent', 'Fee for', 'Amount', 'Late fee incl.', 'Mode', 'Reference', 'Received by', 'Commitment', 'Paid till date', 'Balance', 'Note', 'ID']].concat(S.payments.slice().sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); }).map(function (p) {
+      var sx = studentById(p.studentId);
+      return [p.receiptNo || '', p.paidOn || '', p.enrollNo || (sx && sx.enrollNo) || '', p.studentName || '', className(p.classId), p.parentName || '', periodText(p), num(p.amount), num(p.lateFee) || '', p.mode || '', p.ref || '', p.receivedBy || '', p.commitment != null ? num(p.commitment) : '', p.paidToDate != null ? num(p.paidToDate) : '', p.commitBalance != null ? num(p.commitBalance) : '', p.note || '', p.id];
     })) });
     var att = [['Date', 'Class', 'Student', 'Status']];
     Object.keys(S.attendance).sort().forEach(function (d) { var rec = attFor(d); Object.keys(rec).forEach(function (id) { var s = studentById(id); att.push([d, s ? className(s.classId) : '', s ? s.name : '(deleted student)', ATT[rec[id]] ? ATT[rec[id]].label : rec[id]]); }); });
@@ -2565,6 +2767,10 @@
     sheets.push({ name: 'Salaries', rows: [['Month', 'Staff', 'Role', 'Monthly salary', 'Advance deducted', 'Other deduction', 'Bonus / extra', 'Paid', 'Paid on', 'Mode', 'Note', 'Slip no', 'ID']].concat(S.salaries.slice().sort(function (a, b) { return (a.month || '') + (a.staffName || '') < (b.month || '') + (b.staffName || '') ? -1 : 1; }).map(function (x) {
       return [x.month || '', x.staffName || '', x.role || '', num(x.base), num(x.advance), num(x.deduction), num(x.bonus), num(x.amount), x.paidOn || '', x.mode || '', x.note || '', x.slipNo || '', x.id];
     })) });
+    // v2.11: staff monthly summary (this month and the 11 before it)
+    var ssum = [['Month', 'Staff', 'Role', 'Worked days', 'Casual leave', 'Paid leave', 'Holidays', 'Absent', 'Not marked', 'Total days']];
+    last12(thisMonth()).forEach(function (m) { activeStaff().forEach(function (st) { var x = staffMonthSummary(st.id, m); ssum.push([fmtMonth(m), st.name, st.role || '', x.worked, x.cl, x.pl, x.holidays, x.absent, x.notMarked, x.days]); }); });
+    sheets.push({ name: 'Staff monthly', rows: ssum });
     sheets.push({ name: 'Staff', rows: [['Name', 'Role', 'Phone', 'Class', 'Monthly salary', 'Joined', 'Status', 'Notes', 'ID']].concat(S.staff.slice().sort(byName).map(function (s) { return [s.name, s.role || '', s.phone || '', s.classId ? className(s.classId) : '', num(s.salary), s.joined || '', s.status || 'Active', s.notes || '', s.id]; })) });
     var sa = [['Date', 'Staff', 'Status']];
     S.staff_attendance.slice().sort(function (a, b) { return a.id < b.id ? -1 : 1; }).forEach(function (r) { Object.keys(r).forEach(function (k) { if (k === 'id' || !SATT[r[k]]) return; var st = staffById(k); sa.push([r.id, st ? st.name : '(removed)', SATT[r[k]].label]); }); });
@@ -2593,8 +2799,8 @@
     var today = todayISO(), admin = isAdmin();
     var list = S.holidays.filter(function (h) { return isISODate(h.from); }).sort(function (a, b) { return a.from < b.from ? -1 : a.from > b.from ? 1 : 0; });
     var up = list.filter(function (h) { return holTo(h) >= today; }), past = list.filter(function (h) { return holTo(h) < today; }).reverse();
-    var html = '<p class="note">🗓️ Sundays are always holidays. Days added here as <b>Holiday</b> are skipped on the Attendance page. <b>Events</b> are shown to parents but school is open.' + (admin ? ' Parents see this list in their app.' : '') + '</p>';
-    if (admin) html += '<div class="toolbar"><button class="btn primary" data-act="hol-add">➕ Add holiday / event</button><button class="btn ghost" data-act="hol-presets">⭐ Add national holidays</button></div>';
+    var html = '<p class="note">🗓️ Sundays are always holidays automatically. Days added here as <b>Holiday</b> (for example a public holiday with your own reason) are skipped on student and staff attendance and count as holidays, never absent. <b>Events</b> are shown to parents but school is open.' + (admin ? ' Parents see this list in their app.' : '') + '</p>';
+    if (admin) html += '<div class="toolbar"><button class="btn primary" data-act="hol-add">➕ Add holiday / event</button><button class="btn ghost" data-act="pubhol-add" data-date="' + esc(today) + '">🎉 ' + esc(t('Public holiday')) + '</button><button class="btn ghost" data-act="hol-presets">⭐ Add national holidays</button></div>';
     var item = function (h) {
       var off = h.type !== 'Event';
       return '<li class="hol-item ' + (off ? 'off' : 'ev') + '"><span class="hol-ic">' + (off ? '🎉' : '📌') + '</span><span class="hol-tx"><b>' + esc(h.title || 'Holiday') + '</b><small>' + esc(holRange(h)) + ' · ' + (off ? 'Holiday' : 'Event') + (h.note ? ' · ' + esc(h.note) : '') + '</small></span>' +
@@ -2609,7 +2815,7 @@
     openModal({
       title: h ? 'Edit holiday / event' : 'Add holiday / event',
       body: '<form class="form" novalidate><div class="grid2">' +
-        field('Title *', '<input name="title" maxlength="80" value="' + esc(v.title) + '" placeholder="e.g. Sankranti, Annual Day" required>', '', 'span2') +
+        field(t('Title / reason'), '<input name="title" maxlength="80" value="' + esc(v.title) + '" placeholder="' + esc(t('Blank = Public holiday')) + '">', '<small class="hint">' + esc(t('e.g. Sankranti, Election, Annual Day. Leave blank for “Public holiday”.')) + '</small>', 'span2') +
         field('Type', '<select name="type">' + options([{ value: 'Holiday', label: '🎉 Holiday (school closed)' }, { value: 'Event', label: '📌 Event (school open)' }], v.type) + '</select>', '', 'span2') +
         field('From *', '<input type="date" name="from" value="' + esc(v.from) + '" required>') +
         field('To', '<input type="date" name="to" value="' + esc(v.to && v.to !== v.from ? v.to : '') + '">', '<small class="hint">Leave empty for one day</small>') +
@@ -2619,7 +2825,8 @@
         var g = function (k) { return String(fd.get(k) == null ? '' : fd.get(k)).trim(); };
         var d = { title: g('title'), type: g('type') === 'Event' ? 'Event' : 'Holiday', from: g('from'), to: g('to'), note: g('note') };
         var ok = true;
-        if (d.title.length < 2) { fieldError(form, 'title', 'Enter a title'); ok = false; }
+        if (!d.title) d.title = d.type === 'Event' ? '' : 'Public holiday';
+        if (d.title.length < 2) { fieldError(form, 'title', 'Enter a title for the event'); ok = false; }
         if (!isISODate(d.from)) { fieldError(form, 'from', 'Choose a date'); ok = false; }
         if (d.to && (!isISODate(d.to) || d.to < d.from)) { fieldError(form, 'to', 'End date must be on or after the start'); ok = false; }
         if (d.to && isISODate(d.from) && daysBetween(d.from, d.to) > 62) { fieldError(form, 'to', 'Keep it to 2 months at most'); ok = false; }
@@ -2709,9 +2916,38 @@
   function salaryPaid(staffId, ym) { return S.salaries.filter(function (x) { return x.staffId === staffId && x.month === ym; }); }
   function staffAttRec(date) { return S.staff_attendance.filter(function (r) { return r.id === date; })[0] || null; }
   function staffAttMonth(staffId, ym) {
-    var c = { P: 0, A: 0, H: 0 };
-    S.staff_attendance.forEach(function (r) { if (String(r.id).slice(0, 7) === ym && SATT[r[staffId]]) c[r[staffId]]++; });
+    var c = { P: 0, A: 0, H: 0, C: 0, L: 0 };
+    S.staff_attendance.forEach(function (r) { if (String(r.id).slice(0, 7) === ym && SATT[r[staffId]] && !offDay(String(r.id))) c[r[staffId]]++; });
     return c;
+  }
+  /* v2.11 — staff monthly summary (mirrors supabase/v211.sql app.staff_month_summary).
+   * Days counted = days of the month up to today. Holidays = Sundays + holidays (never absent).
+   * Worked = Present + ½ Half-day. Absent = Absent + ½ Half-day. Casual leave = C. Paid leave = L.
+   * Worked + Casual leave + Paid leave + Holidays + Absent + Not marked = Days. */
+  function staffMonthSummary(staffId, ym) {
+    var n = daysInMonth(ym), today = todayISO(), r = { days: 0, holidays: 0, schoolDays: 0, worked: 0, cl: 0, pl: 0, absent: 0, notMarked: 0 };
+    for (var d = 1; d <= n; d++) {
+      var iso = ym + '-' + String(d).padStart(2, '0');
+      if (iso > today) break;
+      r.days++;
+      if (offDay(iso)) { r.holidays++; continue; }
+      r.schoolDays++;
+      var v = (staffAttRec(iso) || {})[staffId];
+      if (v === 'P') r.worked++; else if (v === 'H') { r.worked += 0.5; r.absent += 0.5; } else if (v === 'A') r.absent++; else if (v === 'C') r.cl++; else if (v === 'L') r.pl++; else r.notMarked++;
+    }
+    return r;
+  }
+  function staffSummaryHTML(ym, staff) {
+    var tot = { days: 0, holidays: 0, worked: 0, cl: 0, pl: 0, absent: 0, notMarked: 0 }, rows = staff.map(function (s) {
+      var x = staffMonthSummary(s.id, ym);
+      Object.keys(tot).forEach(function (k) { tot[k] += x[k]; });
+      return '<tr><td data-label="' + esc(t('Staff')) + '"><b>' + esc(s.name) + '</b>' + (s.role ? ' <small class="muted">' + esc(s.role) + '</small>' : '') + '</td><td class="num" data-label="' + esc(t('Worked days')) + '">' + x.worked + '</td><td class="num" data-label="' + esc(t('Casual leave')) + '">' + x.cl + '</td><td class="num" data-label="' + esc(t('Paid leave')) + '">' + x.pl + '</td><td class="num" data-label="' + esc(t('Holidays')) + '">' + x.holidays + '</td><td class="num" data-label="' + esc(t('Absent')) + '">' + x.absent + '</td><td class="num" data-label="' + esc(t('Not marked')) + '">' + x.notMarked + '</td><td class="num" data-label="' + esc(t('Total')) + '"><b>' + x.days + '</b></td></tr>';
+    });
+    var any = staff[0] ? staffMonthSummary(staff[0].id, ym) : staffMonthSummary('', ym);
+    return '<section class="card" id="staff-summary"><div class="row between wrap"><h3>📊 ' + esc(t('Monthly summary')) + ' · ' + esc(fmtMonth(ym)) + '</h3>' + field(t('Month'), '<input type="month" max="' + thisMonth() + '" value="' + esc(ym) + '" data-change="satt-sum-month">') + '</div>' +
+      '<div class="table-wrap"><table class="table responsive staff-sum"><thead><tr><th>' + esc(t('Staff')) + '</th><th class="num">' + esc(t('Worked days')) + '</th><th class="num">' + esc(t('Casual leave')) + '</th><th class="num">' + esc(t('Paid leave')) + '</th><th class="num">' + esc(t('Holidays')) + '</th><th class="num">' + esc(t('Absent')) + '</th><th class="num">' + esc(t('Not marked')) + '</th><th class="num">' + esc(t('Total')) + '</th></tr></thead><tbody>' + rows.join('') + '</tbody>' +
+      '<tfoot><tr class="tot"><td><b>' + esc(t('Total')) + ' (' + staff.length + ')</b></td><td class="num" data-label="' + esc(t('Worked days')) + '"><b>' + tot.worked + '</b></td><td class="num" data-label="' + esc(t('Casual leave')) + '"><b>' + tot.cl + '</b></td><td class="num" data-label="' + esc(t('Paid leave')) + '"><b>' + tot.pl + '</b></td><td class="num" data-label="' + esc(t('Holidays')) + '"><b>' + tot.holidays + '</b></td><td class="num" data-label="' + esc(t('Absent')) + '"><b>' + tot.absent + '</b></td><td class="num" data-label="' + esc(t('Not marked')) + '"><b>' + tot.notMarked + '</b></td><td class="num" data-label="' + esc(t('Total')) + '"><b>' + tot.days + '</b></td></tr></tfoot></table></div>' +
+      '<p class="muted small">' + esc(fmtMonth(ym)) + ': ' + any.days + ' ' + esc(t('days counted (up to today)')) + ' = ' + any.schoolDays + ' ' + esc(t('school days')) + ' + ' + any.holidays + ' ' + esc(t('holidays (Sundays + public holidays)')) + '. ' + esc(t('For each person: Worked + Casual leave + Paid leave + Holidays + Absent + Not marked = Total. Half-day = ½ worked + ½ absent.')) + '</p></section>';
   }
   function staffTabs() {
     var tabs = [['list', '👩‍🏫 Staff'], ['salary', '💸 Salary'], ['att', '✅ Attendance']];
@@ -2795,7 +3031,7 @@
     var row = function (k, v) { return '<tr><th>' + esc(k) + '</th><td>' + v + '</td></tr>'; };
     return '<div class="slip"><div class="slip-meta"><span>Slip no. <b>' + esc(x.slipNo || '—') + '</b></span><span>Month <b>' + esc(fmtMonth(x.month)) + '</b></span><span>Paid on <b>' + esc(fmtDate(x.paidOn)) + '</b></span></div>' +
       '<table class="slip-tbl"><tbody>' + row('Name', '<b>' + esc(x.staffName) + '</b>') + row('Role', esc(x.role || '—')) +
-      (a.P + a.A + a.H ? row('Attendance', 'Present ' + (a.P + a.H / 2) + ' day(s), absent ' + a.A + ' (working days so far: ' + wd + ')') : '') +
+      (a.P + a.A + a.H + a.C + a.L ? row('Attendance', (function () { var m = staffMonthSummary(x.staffId, x.month); return 'Worked ' + m.worked + ' · Casual leave ' + m.cl + ' · Paid leave ' + m.pl + ' · Holidays ' + m.holidays + ' · Absent ' + m.absent + (m.notMarked ? ' · Not marked ' + m.notMarked : '') + ' (school days: ' + wd + ')'; })()) : '') +
       row('Monthly salary', inr(x.base)) + (num(x.advance) ? row('Advance deducted', '− ' + inr(x.advance)) : '') + (num(x.deduction) ? row('Other deduction', '− ' + inr(x.deduction)) : '') + (num(x.bonus) ? row('Bonus / extra', '+ ' + inr(x.bonus)) : '') +
       row('Payment mode', esc(x.mode || '—')) + (x.note ? row('Note', esc(x.note)) : '') + '</tbody></table>' +
       '<div class="lwr-amount"><div class="lwr-amt"><small>Amount paid</small><b>' + inr(x.amount) + '</b></div><div class="lwr-words"><small>Amount in words</small><b>Rupees ' + esc(inWords(x.amount)) + ' Only</b></div></div>' +
@@ -2811,18 +3047,18 @@
     var date = UI.sattDate, staff = activeStaff(), rec = staffAttRec(date) || {};
     if (!UI.sattDraft || UI.sattDraft.date !== date) { UI.sattDraft = { date: date, data: {}, dirty: false }; staff.forEach(function (s) { if (SATT[rec[s.id]]) UI.sattDraft.data[s.id] = rec[s.id]; }); }
     var dr = UI.sattDraft, off = offDay(date);
-    var html = '<div class="toolbar">' + field('Date', '<input type="date" max="' + todayISO() + '" value="' + date + '" data-change="satt-date">') + '<button type="button" class="btn ghost" data-act="satt-all">✔ All present</button></div>';
-    if (off) html += '<p class="note">🎉 ' + esc(off) + ' — school holiday.</p>';
+    var html = '<div class="toolbar">' + field('Date', '<input type="date" max="' + todayISO() + '" value="' + date + '" data-change="satt-date">') + (off ? '' : '<button type="button" class="btn ghost" data-act="satt-all">✔ All present</button>' + (isAdmin() ? '<button type="button" class="btn ghost small" data-act="pubhol-add" data-date="' + esc(date) + '">🎉 ' + esc(t('Public holiday')) + '</button>' : '')) + '</div>';
+    if (!isMonth(UI.sattSumMonth)) UI.sattSumMonth = date.slice(0, 7);
     if (!staff.length) return html + emptyState('👩‍🏫', 'No staff yet', 'Add staff to mark their attendance.');
+    if (off) return html + holidayBoxHTML(date, Object.keys(rec).some(function (k) { return k !== 'id'; })) + staffSummaryHTML(UI.sattSumMonth, staff);
+    html += '<p class="muted small">P = ' + esc(t('Present')) + ' · A = ' + esc(t('Absent')) + ' · H = ' + esc(t('Half-day')) + ' · C = ' + esc(t('Casual leave')) + ' · L = ' + esc(t('Paid leave')) + '</p>';
     html += '<div class="roster">' + staff.map(function (s) {
       var cur = dr.data[s.id];
-      return '<div class="roster-row"><div class="who"><b>' + esc(s.name) + '</b><small>' + esc(s.role || '') + '</small></div><div class="seg seg3" role="group">' +
-        ['P', 'A', 'H'].map(function (k) { return '<button type="button" class="seg-btn ' + SATT[k].cls + (cur === k ? ' on' : '') + '" data-act="satt-set" data-sid="' + esc(s.id) + '" data-v="' + k + '" aria-pressed="' + (cur === k) + '"><b>' + k + '</b><span>' + SATT[k].label + '</span></button>'; }).join('') + '</div></div>';
+      return '<div class="roster-row"><div class="who"><b>' + esc(s.name) + '</b><small>' + esc(s.role || '') + '</small></div><div class="seg seg5" role="group">' +
+        SATT_KEYS.map(function (k) { return '<button type="button" class="seg-btn ' + SATT[k].cls + (cur === k ? ' on' : '') + '" data-act="satt-set" data-sid="' + esc(s.id) + '" data-v="' + k + '" aria-pressed="' + (cur === k) + '"><b>' + k + '</b><span>' + SATT[k].label + '</span></button>'; }).join('') + '</div></div>';
     }).join('') + '</div>';
     html += '<div class="sticky-save"><button type="button" class="btn primary big block" data-act="satt-save">💾 Save staff attendance' + (dr.dirty ? ' •' : '') + '</button></div>';
-    var ym = date.slice(0, 7);
-    html += '<section class="card"><h3>' + esc(fmtMonth(ym)) + ' summary</h3><div class="table-wrap"><table class="table"><thead><tr><th>Staff</th><th class="num">Present</th><th class="num">Absent</th><th class="num">Half-day</th></tr></thead><tbody>' +
-      staff.map(function (s) { var c = staffAttMonth(s.id, ym); return '<tr><td>' + esc(s.name) + '</td><td class="num">' + c.P + '</td><td class="num">' + c.A + '</td><td class="num">' + c.H + '</td></tr>'; }).join('') + '</tbody></table></div><p class="muted small">Working days in ' + esc(fmtMonth(ym)) + ' so far: ' + workingDays(ym).length + ' (Sundays and holidays left out).</p></section>';
+    html += staffSummaryHTML(UI.sattSumMonth, staff);
     return html;
   }
 
@@ -2864,7 +3100,7 @@
   }
   function attMonthStats(s, ym) {
     var c = { P: 0, A: 0, L: 0, H: 0, m: 0 };
-    Object.keys(S.attendance).forEach(function (d) { if (d.slice(0, 7) === ym) { var v = attFor(d)[s.id]; if (v && c[v] != null) { c[v]++; c.m++; } } });
+    Object.keys(S.attendance).forEach(function (d) { if (d.slice(0, 7) === ym && !offDay(d)) { var v = attFor(d)[s.id]; if (v && c[v] != null) { c[v]++; c.m++; } } });
     c.pct = c.m ? Math.round((c.P + 0.5 * c.H) / c.m * 100) : null;
     return c;
   }
@@ -3440,6 +3676,8 @@
       'Download Excel / JSON backup': 'एक्सेल / JSON बैकअप डाउनलोड करें', 'School, fee rules, logins': 'स्कूल, फीस नियम, लॉगिन', 'Password, language, app': 'पासवर्ड, भाषा, ऐप'
     }
   };
+  // v2.11 labels (added only where a translation is missing)
+  (function (add) { Object.keys(add).forEach(function (l) { Object.keys(add[l]).forEach(function (k) { if (!I18N[l][k]) I18N[l][k] = add[l][k]; }); }); })({"te": {"Absent": "గైర్హాజరు", "All sections": "అన్ని సెక్షన్లు", "Amount per month": "నెలకు మొత్తం", "Amount": "మొత్తం", "Assigned after the class is chosen. D = Drop, I = Inactive.": "తరగతి ఎంచుకున్న తర్వాత ఇవ్వండి. D = డ్రాప్, I = నిష్క్రియ.", "Balance after this payment": "ఈ చెల్లింపు తర్వాత బాకీ", "Balance": "బాకీ", "Being assigned…": "కేటాయిస్తోంది…", "Blank = Public holiday": "ఖాళీ = ప్రభుత్వ సెలవు", "Casual leave": "క్యాజువల్ లీవ్", "Choose the class first": "ముందు తరగతి ఎంచుకోండి", "Commitment = committed fee (monthly: per month × months; yearly: yearly fee) − sibling discount + van fee. Paid counts payments for the months of that period.": "కమిట్‌మెంట్ = కమిటెడ్ ఫీజు (నెలవారీ: నెలకు × నెలలు; సంవత్సర: సంవత్సర ఫీజు) − తోబుట్టువు తగ్గింపు + వ్యాన్ ఫీజు. చెల్లించినది ఆ కాలపు నెలల చెల్లింపులు.", "Commitment balance": "కమిట్‌మెంట్ బాకీ", "Commitment": "కమిట్‌మెంట్", "Commitment, paid and balance": "కమిట్‌మెంట్, చెల్లించినది, బాకీ", "Committed fee": "కమిటెడ్ ఫీజు", "Committed": "కమిటెడ్", "Counted for": "లెక్కించే నెలలు", "Drop": "డ్రాప్", "Dues each month are yearly fee ÷ 12.": "ప్రతి నెల బాకీ = సంవత్సర ఫీజు ÷ 12.", "Edit holiday": "సెలవు మార్చు", "Enrollment no.": "ఎన్‌రోల్‌మెంట్ నం.", "Enter the amount per month and number of months.": "నెలకు మొత్తం, నెలల సంఖ్య నమోదు చేయండి.", "Enter the amount per month": "నెలకు మొత్తం నమోదు చేయండి", "Enter the amount the parent paid; it is counted for the first unpaid months.": "తల్లిదండ్రులు చెల్లించిన మొత్తం నమోదు చేయండి; ఇది మొదటి చెల్లించని నెలలకు లెక్కించబడుతుంది.", "Enter the number of months (1–24)": "నెలల సంఖ్య నమోదు చేయండి (1–24)", "Fee type": "ఫీజు రకం", "For each person: Worked + Casual leave + Paid leave + Holidays + Absent + Not marked = Total. Half-day = ½ worked + ½ absent.": "ప్రతి ఒక్కరికి: పని రోజులు + క్యాజువల్ లీవ్ + పెయిడ్ లీవ్ + సెలవులు + గైర్హాజరు + నమోదు కాని = మొత్తం. సగం రోజు = ½ పని + ½ గైర్హాజరు.", "From month": "ఏ నెల నుండి", "Given automatically when saved": "సేవ్ చేసినప్పుడు ఆటోమేటిక్‌గా ఇస్తుంది", "Half-day": "సగం రోజు", "Holidays": "సెలవులు", "Inactive": "నిష్క్రియ", "Leave blank to show “Public holiday”. Staff and student attendance skip this day; it counts as a holiday, not absent.": "ఖాళీగా ఉంచితే “ప్రభుత్వ సెలవు” అని చూపిస్తుంది. ఈ రోజు సిబ్బంది, విద్యార్థుల హాజరు ఉండదు; ఇది సెలవుగా లెక్కించబడుతుంది, గైర్హాజరుగా కాదు.", "Mark as holiday": "సెలవుగా గుర్తించు", "Marks saved earlier for this day are kept but not counted — the day counts as a holiday.": "ఈ రోజు ముందు సేవ్ చేసిన హాజరు ఉంచబడుతుంది కానీ లెక్కించబడదు — ఇది సెలవు రోజు.", "Month": "నెల", "Monthly payers without number of months": "నెలల సంఖ్య లేని నెలవారీ చెల్లింపుదారులు", "Monthly payers: enter the amount per month and for how many months.": "నెలవారీ చెల్లింపుదారులు: నెలకు మొత్తం, ఎన్ని నెలలు అని నమోదు చేయండి.", "Monthly summary": "నెలవారీ సారాంశం", "Monthly": "నెలవారీ", "Months paying": "చెల్లిస్తున్న నెలలు", "No commitments yet.": "ఇంకా కమిట్‌మెంట్లు లేవు.", "Not marked": "నమోదు కాలేదు", "Number of months is not set for this student — edit the student to set it, so the commitment can be shown.": "ఈ విద్యార్థికి నెలల సంఖ్య లేదు — కమిట్‌మెంట్ చూపడానికి విద్యార్థిని ఎడిట్ చేసి నమోదు చేయండి.", "Number of months": "నెలల సంఖ్య", "One school-wide number for every class. It cannot be changed.": "అన్ని తరగతులకు ఒకే పాఠశాల నంబర్. దీన్ని మార్చలేరు.", "Paid (till date)": "చెల్లించినది (ఇప్పటి వరకు)", "Paid leave": "పెయిడ్ లీవ్", "Paid": "చెల్లించినది", "Pending now": "ప్రస్తుత బాకీ", "Present": "హాజరు", "Public holiday": "ప్రభుత్వ సెలవు", "Reason (optional)": "కారణం (ఐచ్ఛికం)", "School holiday. No attendance is needed.": "పాఠశాల సెలవు. హాజరు అవసరం లేదు.", "Section": "సెక్షన్", "Select class": "తరగతి ఎంచుకోండి", "Select student": "విద్యార్థిని ఎంచుకోండి", "Student": "విద్యార్థి", "Sunday": "ఆదివారం", "Sundays are holidays already": "ఆదివారాలు ఇప్పటికే సెలవులు", "Sundays are holidays. No attendance is needed.": "ఆదివారం సెలవు. హాజరు అవసరం లేదు.", "Title / reason": "పేరు / కారణం", "Total": "మొత్తం", "Worked days": "పని చేసిన రోజులు", "Yearly fee": "సంవత్సర ఫీజు", "Yearly payers: committed fee = yearly fee. Sibling discount and van fee are added on receipts.": "సంవత్సర చెల్లింపుదారులు: కమిటెడ్ ఫీజు = సంవత్సర ఫీజు. తోబుట్టువు తగ్గింపు, వ్యాన్ ఫీజు రసీదులో కలుపుతారు.", "Yearly": "సంవత్సర", "after sibling discount": "తోబుట్టువు తగ్గింపు తర్వాత", "days counted (up to today)": "రోజులు (ఈరోజు వరకు)", "e.g. Election, heavy rain": "ఉదా. ఎన్నికలు, భారీ వర్షం", "e.g. Sankranti, Election, Annual Day. Leave blank for “Public holiday”.": "ఉదా. సంక్రాంతి, ఎన్నికలు, వార్షికోత్సవం. ఖాళీగా ఉంచితే “ప్రభుత్వ సెలవు”.", "holidays (Sundays + public holidays)": "సెలవులు (ఆదివారాలు + ప్రభుత్వ సెలవులు)", "incl. late fees": "ఆలస్య రుసుము సహా", "month": "నెల", "months not set": "నెలలు నమోదు కాలేదు", "months": "నెలలు", "no attendance on holidays": "సెలవు రోజుల్లో హాజరు ఉండదు", "school days": "పాఠశాల రోజులు", "Staff": "సిబ్బంది"}, "hi": {"Absent": "अनुपस्थित", "All sections": "सभी सेक्शन", "Amount per month": "प्रति माह राशि", "Amount": "राशि", "Assigned after the class is chosen. D = Drop, I = Inactive.": "कक्षा चुनने के बाद दें। D = ड्रॉप, I = निष्क्रिय।", "Balance after this payment": "इस भुगतान के बाद बाकी", "Balance": "बाकी", "Being assigned…": "दिया जा रहा है…", "Blank = Public holiday": "खाली = सार्वजनिक छुट्टी", "Casual leave": "आकस्मिक छुट्टी", "Choose the class first": "पहले कक्षा चुनें", "Commitment = committed fee (monthly: per month × months; yearly: yearly fee) − sibling discount + van fee. Paid counts payments for the months of that period.": "कमिटमेंट = तय फीस (मासिक: प्रति माह × महीने; वार्षिक: वार्षिक फीस) − भाई-बहन छूट + वैन फीस। जमा = उस अवधि के महीनों के भुगतान।", "Commitment balance": "कमिटमेंट बाकी", "Commitment": "कमिटमेंट", "Commitment, paid and balance": "कमिटमेंट, जमा और बाकी", "Committed fee": "तय फीस (कमिटेड)", "Committed": "तय", "Counted for": "इन महीनों के लिए", "Drop": "ड्रॉप", "Dues each month are yearly fee ÷ 12.": "हर महीने की देय राशि = वार्षिक फीस ÷ 12।", "Edit holiday": "छुट्टी बदलें", "Enrollment no.": "नामांकन संख्या", "Enter the amount per month and number of months.": "प्रति माह राशि और महीनों की संख्या भरें।", "Enter the amount per month": "प्रति माह राशि भरें", "Enter the amount the parent paid; it is counted for the first unpaid months.": "अभिभावक ने जो राशि दी वह भरें; यह पहले बकाया महीनों में गिनी जाएगी।", "Enter the number of months (1–24)": "महीनों की संख्या भरें (1–24)", "Fee type": "फीस प्रकार", "For each person: Worked + Casual leave + Paid leave + Holidays + Absent + Not marked = Total. Half-day = ½ worked + ½ absent.": "हर व्यक्ति के लिए: काम के दिन + आकस्मिक छुट्टी + सवेतन छुट्टी + छुट्टियाँ + अनुपस्थित + दर्ज नहीं = कुल। आधा दिन = ½ काम + ½ अनुपस्थित।", "From month": "किस महीने से", "Given automatically when saved": "सेव करने पर अपने-आप मिलेगा", "Half-day": "आधा दिन", "Holidays": "छुट्टियाँ", "Inactive": "निष्क्रिय", "Leave blank to show “Public holiday”. Staff and student attendance skip this day; it counts as a holiday, not absent.": "खाली छोड़ें तो “सार्वजनिक छुट्टी” दिखेगा। इस दिन स्टाफ़ और विद्यार्थियों की हाज़िरी नहीं लगेगी; यह छुट्टी गिना जाएगा, अनुपस्थिति नहीं।", "Mark as holiday": "छुट्टी घोषित करें", "Marks saved earlier for this day are kept but not counted — the day counts as a holiday.": "इस दिन की पहले सेव हाज़िरी रखी गई है पर गिनी नहीं जाएगी — यह दिन छुट्टी है।", "Month": "महीना", "Monthly payers without number of months": "महीनों की संख्या के बिना मासिक भुगतानकर्ता", "Monthly payers: enter the amount per month and for how many months.": "मासिक भुगतानकर्ता: प्रति माह राशि और कितने महीने, भरें।", "Monthly summary": "मासिक सारांश", "Monthly": "मासिक", "Months paying": "भुगतान के महीने", "No commitments yet.": "अभी कोई कमिटमेंट नहीं।", "Not marked": "दर्ज नहीं", "Number of months is not set for this student — edit the student to set it, so the commitment can be shown.": "इस विद्यार्थी के महीनों की संख्या नहीं भरी है — कमिटमेंट दिखाने के लिए विद्यार्थी को एडिट करके भरें।", "Number of months": "महीनों की संख्या", "One school-wide number for every class. It cannot be changed.": "सभी कक्षाओं के लिए एक ही स्कूल संख्या। इसे बदला नहीं जा सकता।", "Paid (till date)": "जमा (अब तक)", "Paid leave": "सवेतन छुट्टी", "Paid": "जमा", "Pending now": "अभी बकाया", "Present": "उपस्थित", "Public holiday": "सार्वजनिक छुट्टी", "Reason (optional)": "कारण (वैकल्पिक)", "School holiday. No attendance is needed.": "स्कूल की छुट्टी। हाज़िरी की ज़रूरत नहीं।", "Section": "सेक्शन", "Select class": "कक्षा चुनें", "Select student": "विद्यार्थी चुनें", "Student": "विद्यार्थी", "Sunday": "रविवार", "Sundays are holidays already": "रविवार पहले से छुट्टी है", "Sundays are holidays. No attendance is needed.": "रविवार छुट्टी है। हाज़िरी की ज़रूरत नहीं।", "Title / reason": "नाम / कारण", "Total": "कुल", "Worked days": "काम के दिन", "Yearly fee": "वार्षिक फीस", "Yearly payers: committed fee = yearly fee. Sibling discount and van fee are added on receipts.": "वार्षिक भुगतानकर्ता: तय फीस = वार्षिक फीस। भाई-बहन छूट और वैन फीस रसीद में जुड़ती है।", "Yearly": "वार्षिक", "after sibling discount": "भाई-बहन छूट के बाद", "days counted (up to today)": "दिन (आज तक)", "e.g. Election, heavy rain": "जैसे चुनाव, भारी बारिश", "e.g. Sankranti, Election, Annual Day. Leave blank for “Public holiday”.": "जैसे संक्रांति, चुनाव, वार्षिकोत्सव। खाली छोड़ें तो “सार्वजनिक छुट्टी”।", "holidays (Sundays + public holidays)": "छुट्टियाँ (रविवार + सार्वजनिक छुट्टियाँ)", "incl. late fees": "विलंब शुल्क सहित", "month": "महीना", "months not set": "महीने नहीं भरे", "months": "महीने", "no attendance on holidays": "छुट्टी के दिन हाज़िरी नहीं", "school days": "स्कूल के दिन", "Staff": "स्टाफ़"}});
   var LANG = (function () { var l = ''; if (!PART_B) return 'en'; try { l = localStorage.getItem('lw-lang') || ''; } catch (e) { /* ignore */ } return I18N[l] ? l : 'en'; })();
   function langSaved() { try { return !!localStorage.getItem('lw-lang'); } catch (e) { return false; } }
   function t(s) { return (I18N[LANG] && I18N[LANG][s]) || s; }
@@ -3955,6 +4193,7 @@
     var st = S.settings, c = CLASS_BY_ID[s.classId] || {};
     return '<div class="idc" style="--c:' + esc(c.color || '#38a8e0') + '"><div class="idc-top"><img src="assets/logo.jpeg" alt=""><div><b>' + esc(st.schoolName) + '</b><small>Student ID card · ' + esc(academicYear()) + '</small></div></div>' +
       '<div class="idc-body"><div class="idc-photo">' + (photoUrl ? '<img src="' + esc(photoUrl) + '" alt="">' : '<span>' + esc(initials(s.name)) + '</span>') + '</div><div class="idc-info"><b class="idc-name">' + esc(s.name) + '</b>' +
+      (s.enrollNo ? '<span>Enroll no: <b>' + esc(s.enrollNo) + '</b></span>' : '') +
       '<span>Class: <b>' + esc(className(s.classId)) + (s.section ? ' – ' + esc(s.section) : '') + '</b></span>' + (s.dob ? '<span>DOB: ' + esc(fmtDate(s.dob)) + '</span>' : '') +
       (primaryName(s) ? '<span>Parent: ' + esc(primaryName(s)) + '</span>' : '') + (primaryPhone(s) ? '<span>📞 ' + esc(primaryPhone(s)) + '</span>' : '') + '</div></div>' +
       '<div class="idc-foot">' + esc(st.address || '') + (st.phone ? ' · ' + esc(st.phone) : '') + '</div></div>';
@@ -4946,9 +5185,11 @@
       if (dr.data[sid] === v) delete dr.data[sid]; else dr.data[sid] = v;
       dr.dirty = true; render();
     },
+    'pubhol-add': function (el) { openPublicHolidayForm(attr(el, 'date')); },
     'satt-all': function () { var dr = UI.sattDraft; if (!dr) return; activeStaff().forEach(function (s) { dr.data[s.id] = 'P'; }); dr.dirty = true; render(); },
     'satt-save': function () {
       var dr = UI.sattDraft; if (!dr || !isAdmin()) return;
+      if (offDay(dr.date)) { dr.dirty = false; toast(offDay(dr.date) + ' — ' + t('no attendance on holidays'), 'err'); render(); return; }
       var rec = Object.assign({}, staffAttRec(dr.date) || {});
       delete rec.id;
       activeStaff().forEach(function (s) { if (dr.data[s.id]) rec[s.id] = dr.data[s.id]; else delete rec[s.id]; });
@@ -4984,6 +5225,7 @@
       UI.attDate = v; render();
     },
     'att-month': function (el) { if (isMonth(el.value)) { UI.attMonth = el.value; render(); } },
+    'satt-sum-month': function (el) { if (isMonth(el.value) && el.value <= thisMonth()) { UI.sattSumMonth = el.value; render(); } },
     'fee-month': function (el) { if (isMonth(el.value)) { UI.feeMonth = el.value; render(); } },
     'pend-class': function (el) { UI.pendClass = CLASS_BY_ID[el.value] ? el.value : ''; render(); },
     'exp-month': function (el) { if (isMonth(el.value)) { UI.expMonth = el.value; render(); } },

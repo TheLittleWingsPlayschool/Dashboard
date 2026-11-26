@@ -1,9 +1,9 @@
 /**
- * Little Wings — Google Sheet mirror of the Dashboard  (v1.0)
+ * Little Wings — Google Sheet mirror of the Dashboard  (v1.1 · dashboard v2.11)
  * --------------------------------------------------------------
  * Paste this whole file into: the "Dashboard" Google Sheet → Extensions → Apps Script.
  * It copies (one way) the dashboard data into the tabs of this sheet:
- *   Students · Enquiries · Payments · Pending fees · Attendance · Expenses · Salaries · Staff · Holidays · README · Sync log
+ *   Students · Enquiries · Payments · Pending fees · Attendance · Expenses · Salaries · Staff · Staff monthly · Holidays · README · Sync log
  * Edits made in this sheet DO NOT go back to the dashboard and are overwritten at the next sync.
  *
  * Runs inside Google (no AI, no computer needed):
@@ -26,24 +26,28 @@ var EVERY_MINUTES  = 5;                           // safety-net schedule (1, 5, 
 
 var TABS = [
   { name: 'Students', key: 'students', cols: [
-    ['Name', 'name'], ['Class', 'class'], ['Section', 'section'], ['Status', 'status'], ['Admission date', 'admission_date', 'date'],
+    ['Enrollment no', 'enroll_no'], ['Name', 'name'], ['Class', 'class'], ['Section', 'section'], ['Status', 'status'], ['Admission date', 'admission_date', 'date'],
     ['Date of birth', 'dob', 'date'], ['Father', 'father_name'], ['Father mobile', 'father_phone', 'phone'], ['Mother', 'mother_name'],
     ['Mother mobile', 'mother_phone', 'phone'], ['Guardian', 'guardian_name'], ['Guardian mobile', 'guardian_phone', 'phone'],
     ['Phone', 'phone', 'phone'], ['WhatsApp', 'whatsapp', 'phone'], ['Emergency', 'emergency', 'phone'], ['Pickup', 'pickup'],
-    ['Address', 'address'], ['Monthly fee', 'monthly_fee', 'money'], ['Yearly fee', 'yearly_fee', 'money'], ['Van fee', 'van_fee', 'money'] ] },
+    ['Address', 'address'], ['Fee type', 'fee_type'], ['Months', 'fee_months', 'int'], ['Committed fee', 'committed_fee', 'money'],
+    ['Monthly fee', 'monthly_fee', 'money'], ['Yearly fee', 'yearly_fee', 'money'], ['Van fee', 'van_fee', 'money'] ] },
   { name: 'Enquiries', key: 'enquiries', cols: [
     ['Date', 'date', 'date'], ['Child', 'child_name'], ['Date of birth', 'dob', 'date'], ['Class', 'class'], ['Father', 'father_name'],
     ['Father mobile', 'father_phone', 'phone'], ['Mother', 'mother_name'], ['Mother mobile', 'mother_phone', 'phone'], ['Parent', 'parent_name'],
     ['Phone', 'phone', 'phone'], ['Source', 'source'], ['Feedback', 'feedback'], ['Status', 'status'], ['Follow-up', 'follow_up', 'date'], ['Notes', 'notes'] ] },
   { name: 'Payments', key: 'payments', cols: [
-    ['Paid on', 'paid_on', 'date'], ['Receipt no', 'receipt_no'], ['Student', 'student'], ['Class', 'class'], ['Parent', 'parent'],
+    ['Paid on', 'paid_on', 'date'], ['Receipt no', 'receipt_no'], ['Enrollment no', 'enroll_no'], ['Student', 'student'], ['Class', 'class'], ['Parent', 'parent'],
     ['Months', 'months'], ['Amount', 'amount', 'money'], ['Mode', 'mode'], ['Reference', 'ref'], ['Discount', 'discount', 'money'],
-    ['Late fee', 'late_fee', 'money'], ['Van fee', 'van_fee', 'money'], ['Balance after', 'balance_after', 'money'], ['Received by', 'received_by'], ['Note', 'note'] ] },
+    ['Late fee', 'late_fee', 'money'], ['Van fee', 'van_fee', 'money'], ['Balance after', 'balance_after', 'money'],
+    ['Commitment', 'commitment', 'money'], ['Paid till date', 'paid_to_date', 'money'], ['Balance', 'commit_balance', 'money'], ['Received by', 'received_by'], ['Note', 'note'] ] },
   { name: 'Pending fees', key: 'pending', cols: [
-    ['Student', 'student'], ['Class', 'class'], ['Section', 'section'], ['Parent', 'parent'], ['Mobile', 'phone', 'phone'], ['Month', 'month', 'month'],
+    ['Enrollment no', 'enroll_no'], ['Student', 'student'], ['Class', 'class'], ['Section', 'section'], ['Parent', 'parent'], ['Mobile', 'phone', 'phone'], ['Month', 'month', 'month'],
     ['Monthly fee', 'monthly_fee', 'money'], ['Van fee', 'van_fee', 'money'], ['Sibling discount', 'discount', 'money'], ['Late fees', 'late_fee', 'money'],
     ['Due this month', 'this_month_due', 'money'], ['Total due', 'total_due', 'money'], ['Months billed', 'months_billed', 'int'],
-    ['Months paid', 'months_paid', 'int'], ['Total paid', 'total_paid', 'money'], ['Fees from', 'fees_from', 'month'] ] },
+    ['Months paid', 'months_paid', 'int'], ['Total paid', 'total_paid', 'money'], ['Fees from', 'fees_from', 'month'],
+    ['Fee type', 'fee_type'], ['Months committed', 'fee_months', 'int'], ['Committed fee', 'committed_fee', 'money'], ['Commitment', 'commitment', 'money'],
+    ['Paid (commitment)', 'commit_paid', 'money'], ['Balance (commitment)', 'commit_balance', 'money'], ['Commitment from', 'commit_from', 'month'], ['Commitment to', 'commit_to', 'month'] ] },
   { name: 'Attendance', key: 'attendance', cols: [
     ['Date', 'date', 'date'], ['Class', 'class'], ['Student', 'student'], ['Status', 'status'] ] },
   { name: 'Expenses', key: 'expenses', cols: [
@@ -54,10 +58,14 @@ var TABS = [
     ['Mode', 'mode'], ['Slip no', 'slip_no'], ['Note', 'note'] ] },
   { name: 'Staff', key: 'staff', cols: [
     ['Name', 'name'], ['Role', 'role'], ['Class', 'class'], ['Mobile', 'phone', 'phone'], ['Salary', 'salary', 'money'], ['Joined', 'joined', 'date'], ['Status', 'status'] ] },
+  { name: 'Staff monthly', key: 'staff_monthly', cols: [
+    ['Month', 'month', 'month'], ['Staff', 'staff'], ['Role', 'role'], ['Worked days', 'worked', 'num'], ['Casual leave', 'casual_leave', 'num'],
+    ['Paid leave', 'paid_leave', 'num'], ['Holidays', 'holidays', 'num'], ['Absent', 'absent', 'num'], ['Not marked', 'not_marked', 'num'],
+    ['Total days', 'days', 'int'], ['School days', 'school_days', 'int'] ] },
   { name: 'Holidays', key: 'holidays', cols: [
     ['From', 'from', 'date'], ['To', 'to', 'date'], ['Title', 'title'], ['Type', 'type'], ['Note', 'note'] ] }
 ];
-var FORMATS = { date: 'dd mmm yyyy', month: 'mmm yyyy', money: '[$₹]#,##0', int: '0', phone: '@', text: '@' };
+var FORMATS = { date: 'dd mmm yyyy', month: 'mmm yyyy', money: '[$₹]#,##0', int: '0', num: '0.0', phone: '@', text: '@' };
 var README = 'README', LOG = 'Sync log';
 
 // ---------------------------------------------------------------- pure helpers (unit-tested)
@@ -72,7 +80,7 @@ function cellValue_(v, type) {
     var k = /^(\d{4})-(\d{2})$/.exec(String(v));
     return k ? new Date(+k[1], +k[2] - 1, 1) : String(v);
   }
-  if (type === 'money' || type === 'int') { var n = Number(v); return isFinite(n) ? n : String(v); }
+  if (type === 'money' || type === 'int' || type === 'num') { var n = Number(v); return isFinite(n) ? n : String(v); }
   return String(v);                              // phones & text always as text
 }
 function buildRows_(tab, items) {

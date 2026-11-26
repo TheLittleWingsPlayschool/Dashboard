@@ -1,5 +1,5 @@
 /*!
- * Little Wings Parents (v1.7.0) — attendance, homework & daily updates, timetable,
+ * Little Wings Parents (v1.8.0) — attendance, homework & daily updates, timetable,
  * report cards, gallery, notices, holidays, fee receipts, feedback and phone alerts.
  * Plain static app, no build step. Talks to the school's Supabase project with
  * the PUBLIC publishable key only; what a parent can see is decided by the
@@ -11,7 +11,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.7.0';
+  var VERSION = '1.8.0';
   // Part B (language toggle + phone alerts): on since v1.5.0.
   var PART_B = true;
   var TZ = 'Asia/Kolkata';
@@ -92,6 +92,7 @@
       'Please pay at the school office. Ignore if already paid today.': 'దయచేసి పాఠశాల కార్యాలయంలో చెల్లించండి. ఈరోజు చెల్లించి ఉంటే పట్టించుకోకండి.',
       'No pending fees as of {0}. Thank you! 🙏': '{0} వరకు బకాయి లేదు. ధన్యవాదాలు! 🙏',
       'Monthly fee': 'నెలవారీ ఫీజు', 'Paid ✓': 'చెల్లించారు ✓', '{0} due': '{0} బకాయి', 'Months paid': 'చెల్లించిన నెలలు', '{0} of {1}': '{1} లో {0}',
+      'Commitment': 'కమిట్‌మెంట్', 'Paid (till date)': 'చెల్లించినది (ఇప్పటి వరకు)', 'Balance': 'బాకీ', 'Enrollment no.': 'ఎన్‌రోల్‌మెంట్ నం.',
       'Total paid': 'మొత్తం చెల్లింపు', 'Sibling discount': 'తోబుట్టువుల తగ్గింపు', 'Late fee included': 'ఆలస్య రుసుము కలిపి',
       'Van fee': 'వ్యాన్ ఫీజు', '{0} / month (included above)': 'నెలకు {0} (పైన కలిపి)', '/ month': '/ నెల',
       'Counted from {0} to {1}.': '{0} నుండి {1} వరకు లెక్కించారు.', 'The monthly fee is not set yet. Please contact the school office.': 'నెలవారీ ఫీజు ఇంకా నిర్ణయించలేదు. దయచేసి కార్యాలయాన్ని సంప్రదించండి.',
@@ -189,6 +190,7 @@
       'Please pay at the school office. Ignore if already paid today.': 'कृपया स्कूल कार्यालय में जमा करें। आज जमा कर दी हो तो ध्यान न दें।',
       'No pending fees as of {0}. Thank you! 🙏': '{0} तक कोई बकाया नहीं। धन्यवाद! 🙏',
       'Monthly fee': 'मासिक फ़ीस', 'Paid ✓': 'जमा ✓', '{0} due': '{0} बकाया', 'Months paid': 'जमा किए महीने', '{0} of {1}': '{1} में से {0}',
+      'Commitment': 'कमिटमेंट', 'Paid (till date)': 'जमा (अब तक)', 'Balance': 'बाकी', 'Enrollment no.': 'नामांकन संख्या',
       'Total paid': 'कुल जमा', 'Sibling discount': 'भाई-बहन छूट', 'Late fee included': 'विलंब शुल्क शामिल',
       'Van fee': 'वैन फ़ीस', '{0} / month (included above)': '{0} / महीना (ऊपर शामिल)', '/ month': '/ महीना',
       'Counted from {0} to {1}.': '{0} से {1} तक गिना गया।', 'The monthly fee is not set yet. Please contact the school office.': 'मासिक फ़ीस अभी तय नहीं है। कृपया कार्यालय से संपर्क करें।',
@@ -448,6 +450,13 @@
       var sum = (r[0].data || [])[0] || null;
       if (!sum || !sum.enabled) { if (sum && !sum.enabled) S.fees = {}; S.fees[sid] = { enabled: false, at: new Date().toISOString() }; return; }
       S.fees[sid] = { enabled: true, sum: sum, pays: r[1].data || [], at: new Date().toISOString() };
+      // v2.11: commitment (committed fee, paid till date, balance) and the figures saved on each receipt.
+      return Promise.all([SB.rpc('parent_commitment', { p_student: sid }), SB.rpc('parent_payment_snaps', { p_student: sid })]).then(function (x) {
+        var f = S.fees[sid]; if (!f) return;
+        f.commit = !x[0].error ? ((x[0].data || [])[0] || null) : null;
+        var snaps = {}; if (!x[1].error) (x[1].data || []).forEach(function (r) { snaps[r.id] = r; });
+        f.snaps = snaps;
+      }).catch(function () { /* older server: no commitment yet */ });
     });
   }
   function loadHolidays() {
@@ -739,6 +748,7 @@
         '<div><small>' + esc(t('Total paid')) + '</small><b>' + esc(inr(m.total_paid)) + '</b></div>' +
         (Number(m.discount) > 0 ? '<div><small>' + esc(t('Sibling discount')) + '</small><b class="green-t">−' + esc(inr(m.discount)) + ' ' + esc(t('/ month')) + '</b></div>' : '') +
         (Number(m.late_fee) > 0 ? '<div><small>' + esc(t('Late fee included')) + '</small><b class="coral-t">' + esc(inr(m.late_fee)) + '</b></div>' : '') + '</div>' +
+        (f.commit && f.commit.commitment != null ? '<div class="kv-grid commit-grid"><div><small>' + esc(t('Commitment')) + '</small><b>' + esc(inr(f.commit.commitment)) + '</b></div><div><small>' + esc(t('Paid (till date)')) + '</small><b class="green-t">' + esc(inr(f.commit.paid)) + '</b></div><div><small>' + esc(t('Balance')) + '</small><b class="' + (Number(f.commit.balance) > 0 ? 'coral-t' : 'green-t') + '">' + esc(inr(f.commit.balance)) + '</b></div>' + (f.commit.enroll_no ? '<div><small>' + esc(t('Enrollment no.')) + '</small><b>' + esc(f.commit.enroll_no) + '</b></div>' : '') + '</div>' : '') +
         (van > 0 ? '<p class="muted small">🚐 ' + esc(t('Van fee')) + ': ' + esc(t('{0} / month (included above)', inr(van))) + '</p>' : '') +
         (m.fees_from ? '<p class="muted small">' + esc(t('Counted from {0} to {1}.', feeMonthName(m.fees_from), feeMonthName(m.as_of_month))) + '</p>' : '');
     } else {
@@ -759,7 +769,11 @@
     var p = (f.pays || []).filter(function (x) { return x.id === pid; })[0];
     if (!p) return null;
     var m = f.sum, snap = p.balance_after != null && isFinite(Number(p.balance_after));
+    var cs = (f.snaps || {})[pid], cm = f.commit, commit = null;
+    if (cs && cs.commitment != null) commit = { commitment: Number(cs.commitment), paid: Number(cs.paid_to_date) || 0, balance: Number(cs.commit_balance) || 0, label: '' };
+    else if (cm && cm.commitment != null) commit = { commitment: Number(cm.commitment), paid: Number(cm.paid) || 0, balance: Number(cm.balance) || 0, label: 'as on ' + window.LWReceipt.fmtDate(todayISO()) };
     return {
+      enrollNo: (cs && cs.enroll_no) || (cm && cm.enroll_no) || '', commit: commit,
       school: { name: m.school_name, address: m.school_address, phone: m.school_phone, email: m.school_email }, logo: '../assets/logo.jpeg',
       receiptNo: p.receipt_no, date: p.paid_on, studentName: p.student_name || k.name, className: className(p.class_id || k.classId), parentName: p.parent_name || m.parent_name || '',
       months: p.months || [], monthlyFee: p.monthly_fee != null ? p.monthly_fee : m.monthly_fee, vanFee: Number(p.van_fee) || 0, amount: p.amount, mode: p.mode, ref: p.ref,

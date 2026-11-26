@@ -25,6 +25,14 @@
 .lwr-words { flex: 1 1 auto; min-width: 0; border-left: 1px solid #c7e6cf; padding-left: .8rem; }
 .lwr-words b { font-size: .92rem; overflow-wrap: anywhere; }
 .lwr-bal { margin: .35rem 0 0; font-size: .9rem; }
+.lwr-commit { display: grid; grid-template-columns: repeat(3, 1fr); gap: .45rem; margin: .45rem 0 .2rem; }
+.lwr-commit > div { background: #eef6fc; border-radius: 10px; padding: .45rem .6rem; min-width: 0; }
+.lwr-commit > div:nth-child(2), .lwr-commit > div.ok { background: #eaf6ec; }
+.lwr-commit > div.due { background: #fdeceb; }
+.lwr-commit small { display: block; font-size: .62rem; letter-spacing: .05em; text-transform: uppercase; color: #6b7b8c; }
+.lwr-commit b { font-size: 1.05rem; color: #1b6e99; white-space: nowrap; }
+.lwr-commit > div:nth-child(2) b, .lwr-commit > div.ok b { color: #1e7a3c; }
+.lwr-commit > div.due b { color: #c2453a; }
 .lwr-sign { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-top: 1.1rem; }
 .lwr-recv b { display: block; min-height: 1.2em; font-size: .95rem; }
 .lwr-sigline { min-width: 46%; border-top: 1.5px solid #8a98a6; padding-top: .2rem; text-align: center; font-size: .75rem; color: #5a6b7c; }
@@ -63,6 +71,7 @@
   #print-root.two .lwr-tbl { margin: 1.5mm 0 1mm; }
   #print-root.two .lwr-tbl th, #print-root.two .lwr-tbl td { padding: 1mm .2rem; }
   #print-root.two .lwr-amount { margin: 1.5mm 0 1mm; padding: 1.8mm 3mm; }
+  #print-root.two .lwr-commit { margin: 1mm 0 .5mm; gap: 2mm; } #print-root.two .lwr-commit > div { padding: 1mm 2.5mm; } #print-root.two .lwr-commit b { font-size: .95rem; }
   #print-root.two .lwr-sign { margin-top: 5mm; }
   #print-root.two .lwr-foot { margin-top: 2mm; }
   #print-root.two .lwr-cut { margin: 3mm 0; }
